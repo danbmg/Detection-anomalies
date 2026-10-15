@@ -1,27 +1,30 @@
 #Fundamental .gitignore
 
 .vscode/
-*.out
-*.o
-*.a
-*.obj
 *~
-*lo
-*slo
-.vscode
 *.pdf
-*.txt
 learning.md
 .discord.env
 zip/
 .claude/
-*gcno
-*gcda
-.clang-format
-build/
-exit
 CLAUDE.md
-nanotekspice
-Nts/file/
-rom.bin
-G-OOP-400_nanotekspice/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Project data and outputs
+data/
+*.db
+*.sqlite3
+*.log
