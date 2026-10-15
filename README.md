@@ -47,6 +47,17 @@ The history is a SQLite file, `data/history.db` by default (`--db` to change it)
 importing the same points again replaces them instead of duplicating them.
 `--from` is included, `--to` is excluded, and points always come back oldest first.
 
+### See the normal range
+
+```bash
+python -m anomaly show traffic --band --from 2026-01-14T13:45 --to 2026-01-14T14:45
+python -m anomaly show traffic --band --window 24 --k 2.5   # 2 hours of history, narrower band
+```
+
+For each point, the expected value is the mean of the `--window` points just before it (default 12, i.e. 1 hour),
+and the normal range is expected ± `--k` standard deviations of those points (default 3).
+A point is never part of its own range, and the first `--window` points are shown as `warming up`.
+
 ## Development
 
 | Command | Purpose |
