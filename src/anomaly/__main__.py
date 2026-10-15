@@ -6,6 +6,8 @@ from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 
+from anomaly.detect import flag_deviations
+from anomaly.model import Point
 from anomaly.normal import DEFAULT_K, DEFAULT_WINDOW, Band, rolling_bands
 from anomaly.simulate import (
     DEFAULT_START,
@@ -117,17 +119,52 @@ def add_import_command(commands: Commands) -> None:
     command.set_defaults(run=run_import)
 
 
-def run_show(args: argparse.Namespace) -> int:
+def add_metric_options(command: argparse.ArgumentParser) -> None:
+    command.add_argument("metric", help="name of the metric, e.g. traffic")
+    command.add_argument(
+        "--from", dest="start", type=datetime.fromisoformat, metavar="TIME", help="included"
+    )
+    command.add_argument(
+        "--to", dest="end", type=datetime.fromisoformat, metavar="TIME", help="excluded"
+    )
+    add_db_option(command)
+
+
+def add_band_options(command: argparse.ArgumentParser) -> None:
+    command.add_argument(
+        "--window",
+        type=int,
+        default=DEFAULT_WINDOW,
+        help=f"previous points behind each band (default: {DEFAULT_WINDOW}, i.e. 1 hour)",
+    )
+    command.add_argument(
+        "--k", type=float, default=DEFAULT_K, help=f"band half-width in std (default: {DEFAULT_K})"
+    )
+
+
+def load_metric(args: argparse.Namespace) -> list[Point] | None:
+    """Points of the metric up to --to, from the very first: a band needs the points before it."""
+    error = f"anomaly {args.command}:"
     if not args.db.exists():
-        print(f"anomaly show: no history at {args.db}, import a metric first", file=sys.stderr)
-        return 2
+        print(f"{error} no history at {args.db}, import a metric first", file=sys.stderr)
+        return None
     with History(args.db) as history:
         known = history.metrics()
-        # The band of the first point shown needs the points before it: read from the beginning.
-        points = history.read(args.metric, None if args.band else args.start, args.end)
+        points = history.read(args.metric, end=args.end)
     if args.metric not in known:
         names = ", ".join(known) or "none"
-        print(f"anomaly show: unknown metric '{args.metric}' (known: {names})", file=sys.stderr)
+        print(f"{error} unknown metric '{args.metric}' (known: {names})", file=sys.stderr)
+        return None
+    return points
+
+
+def is_shown(timestamp: datetime, args: argparse.Namespace) -> bool:
+    return args.start is None or timestamp >= args.start
+
+
+def run_show(args: argparse.Namespace) -> int:
+    points = load_metric(args)
+    if points is None:
         return 2
     bands: list[Band | None] = [None] * len(points)
     if args.band:
@@ -137,7 +174,7 @@ def run_show(args: argparse.Namespace) -> int:
             print(f"anomaly show: {error}", file=sys.stderr)
             return 2
     for point, band in zip(points, bands, strict=True):
-        if args.start and point.timestamp < args.start:
+        if not is_shown(point.timestamp, args):
             continue
         line = f"{point.timestamp.isoformat(timespec='minutes')}  {point.value:>8.2f}"
         if args.band:
@@ -154,25 +191,39 @@ def describe(band: Band | None) -> str:
 
 def add_show_command(commands: Commands) -> None:
     command = commands.add_parser("show", help="print the stored points of a metric, oldest first")
-    command.add_argument("metric", help="name of the metric, e.g. traffic")
-    command.add_argument(
-        "--from", dest="start", type=datetime.fromisoformat, metavar="TIME", help="included"
-    )
-    command.add_argument(
-        "--to", dest="end", type=datetime.fromisoformat, metavar="TIME", help="excluded"
-    )
+    add_metric_options(command)
     command.add_argument("--band", action="store_true", help="also print the normal range")
-    command.add_argument(
-        "--window",
-        type=int,
-        default=DEFAULT_WINDOW,
-        help=f"previous points behind each band (default: {DEFAULT_WINDOW}, i.e. 1 hour)",
-    )
-    command.add_argument(
-        "--k", type=float, default=DEFAULT_K, help=f"band half-width in std (default: {DEFAULT_K})"
-    )
-    add_db_option(command)
+    add_band_options(command)
     command.set_defaults(run=run_show)
+
+
+def run_detect(args: argparse.Namespace) -> int:
+    points = load_metric(args)
+    if points is None:
+        return 2
+    try:
+        flags = flag_deviations(points, args.window, args.k)
+    except ValueError as error:
+        print(f"anomaly detect: {error}", file=sys.stderr)
+        return 2
+    flags = [flag for flag in flags if is_shown(flag.timestamp, args)]
+    for flag in flags:
+        timestamp = flag.timestamp.isoformat(timespec="minutes")
+        line = f"{timestamp}  {flag.value:>8.2f}  expected {flag.expected:>8.2f}  z {flag.z:>+8.2f}"
+        print(f"{line}  {flag.label or ''}".rstrip())
+    judged = [point for point in points if is_shown(point.timestamp, args)]
+    summary = f"{len(flags)} flagged points out of {len(judged)} (window {args.window}, k {args.k})"
+    if any(point.label for point in judged):  # ground truth known: say how many flags are right
+        summary += f", {sum(flag.label is not None for flag in flags)} on a true anomaly"
+    print(summary)
+    return 0
+
+
+def add_detect_command(commands: Commands) -> None:
+    command = commands.add_parser("detect", help="print the points outside their normal range")
+    add_metric_options(command)
+    add_band_options(command)
+    command.set_defaults(run=run_detect)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -184,6 +235,7 @@ def build_parser() -> argparse.ArgumentParser:
     add_simulate_command(commands)
     add_import_command(commands)
     add_show_command(commands)
+    add_detect_command(commands)
     return parser
 
 

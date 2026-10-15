@@ -58,6 +58,18 @@ For each point, the expected value is the mean of the `--window` points just bef
 and the normal range is expected ± `--k` standard deviations of those points (default 3).
 A point is never part of its own range, and the first `--window` points are shown as `warming up`.
 
+### Detect deviations
+
+```bash
+python -m anomaly detect traffic                                     # every flagged point + a summary
+python -m anomaly detect traffic --from 2026-01-13 --to 2026-01-14   # one day only
+```
+
+A point is flagged when its z-score, its distance to the expected value in standard deviations, is above `--k` (default 3).
+Each line shows the value, the expected value, the z-score and the ground truth label when known;
+the summary says how many flags fall on a true anomaly.
+On a perfectly flat history a point equal to it is never flagged, and any change gets an infinite z-score.
+
 ## Development
 
 | Command | Purpose |
