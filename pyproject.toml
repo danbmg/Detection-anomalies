@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "Detect abnormal behavior in a time series metric without fixed thresholds"
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = ["matplotlib"]
 
 [project.optional-dependencies]
 dev = ["ruff", "mypy", "pytest"]
@@ -26,6 +26,10 @@ select = ["E", "W", "F", "I", "B", "UP", "N"]
 [tool.mypy]
 strict = true
 files = ["src", "tests"]
+
+[[tool.mypy.overrides]]
+module = "anomaly.plot"
+disallow_untyped_calls = false  # matplotlib.dates ships without type hints
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

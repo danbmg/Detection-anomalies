@@ -10,6 +10,7 @@ from anomaly.alerting import DEFAULT_CONFIRM, DEFAULT_QUIET, Alert, raise_alerts
 from anomaly.detect import flag_deviations
 from anomaly.model import Point
 from anomaly.normal import DEFAULT_K, DEFAULT_WINDOW, Band, rolling_bands
+from anomaly.plot import plot_metric
 from anomaly.simulate import (
     DEFAULT_START,
     Anomaly,
@@ -265,10 +266,7 @@ def describe_alert(metric: str, alert: Alert) -> str:
     return f"{line}  {alert.label or ''}".rstrip()
 
 
-def add_alert_command(commands: Commands) -> None:
-    command = commands.add_parser("alert", help="raise one alert per lasting deviation (incident)")
-    add_metric_options(command)
-    add_band_options(command)
+def add_alert_options(command: argparse.ArgumentParser) -> None:
     command.add_argument(
         "--confirm",
         type=positive_int,
@@ -281,10 +279,57 @@ def add_alert_command(commands: Commands) -> None:
         default=DEFAULT_QUIET,
         help=f"normal points in a row that end an incident (default: {DEFAULT_QUIET})",
     )
+
+
+def add_alert_command(commands: Commands) -> None:
+    command = commands.add_parser("alert", help="raise one alert per lasting deviation (incident)")
+    add_metric_options(command)
+    add_band_options(command)
+    add_alert_options(command)
     command.add_argument(
         "--log", type=Path, default=DEFAULT_LOG, help=f"alerts are appended here ({DEFAULT_LOG})"
     )
     command.set_defaults(run=run_alert)
+
+
+def run_plot(args: argparse.Namespace) -> int:
+    points = load_metric(args)
+    if points is None:
+        return 2
+    try:
+        bands = rolling_bands([point.value for point in points], args.window, args.k)
+        flags = flag_deviations(points, args.window, args.k)
+        alerts = raise_alerts(points, flags, args.confirm, args.quiet)
+    except ValueError as error:
+        print(f"anomaly plot: {error}", file=sys.stderr)
+        return 2
+    shown = [i for i, point in enumerate(points) if is_shown(point.timestamp, args)]
+    if not shown:
+        print("anomaly plot: no point in this time range", file=sys.stderr)
+        return 2
+    points, bands = points[shown[0] :], bands[shown[0] :]
+    flags = [flag for flag in flags if is_shown(flag.timestamp, args)]
+    alerts = [alert for alert in alerts if is_shown(alert.raised_at, args)]
+    first, last = (points[i].timestamp.isoformat(timespec="minutes") for i in (0, -1))
+    subtitle = (
+        f"{first} → {last}   ·   window {args.window} points, k {args.k:g}, "
+        f"confirm {args.confirm}, quiet {args.quiet}   ·   "
+        f"{len(flags)} flagged points, {len(alerts)} alerts"
+    )
+    out = args.out or Path(f"data/{args.metric}.png")
+    title = f"{args.metric}: normal range and anomalies"
+    plot_metric(out, title, subtitle, points, bands, flags, alerts)
+    print(f"Wrote {out} ({len(points)} points, {len(flags)} flagged, {len(alerts)} alerts)")
+    return 0
+
+
+def add_plot_command(commands: Commands) -> None:
+    command = commands.add_parser("plot", help="draw the metric, its normal range and anomalies")
+    add_metric_options(command)
+    add_band_options(command)
+    add_alert_options(command)
+    command.add_argument("--out", type=Path, help="PNG file (default: data/<metric>.png)")
+    command.set_defaults(run=run_plot)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -298,6 +343,7 @@ def build_parser() -> argparse.ArgumentParser:
     add_show_command(commands)
     add_detect_command(commands)
     add_alert_command(commands)
+    add_plot_command(commands)
     return parser
 
 
