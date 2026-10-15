@@ -6,6 +6,7 @@ from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 
+from anomaly.normal import DEFAULT_K, DEFAULT_WINDOW, Band, rolling_bands
 from anomaly.simulate import (
     DEFAULT_START,
     Anomaly,
@@ -122,15 +123,33 @@ def run_show(args: argparse.Namespace) -> int:
         return 2
     with History(args.db) as history:
         known = history.metrics()
-        points = history.read(args.metric, args.start, args.end)
+        # The band of the first point shown needs the points before it: read from the beginning.
+        points = history.read(args.metric, None if args.band else args.start, args.end)
     if args.metric not in known:
         names = ", ".join(known) or "none"
         print(f"anomaly show: unknown metric '{args.metric}' (known: {names})", file=sys.stderr)
         return 2
-    for point in points:
-        timestamp = point.timestamp.isoformat(timespec="minutes")
-        print(f"{timestamp}  {point.value:>8.2f}  {point.label or ''}".rstrip())
+    bands: list[Band | None] = [None] * len(points)
+    if args.band:
+        try:
+            bands = rolling_bands([point.value for point in points], args.window, args.k)
+        except ValueError as error:
+            print(f"anomaly show: {error}", file=sys.stderr)
+            return 2
+    for point, band in zip(points, bands, strict=True):
+        if args.start and point.timestamp < args.start:
+            continue
+        line = f"{point.timestamp.isoformat(timespec='minutes')}  {point.value:>8.2f}"
+        if args.band:
+            line += f"  {describe(band)}"
+        print(f"{line}  {point.label or ''}".rstrip())
     return 0
+
+
+def describe(band: Band | None) -> str:
+    if band is None:
+        return f"{'warming up':<36}"
+    return f"expected {band.expected:>8.2f}  [{band.lower:>8.2f}, {band.upper:>8.2f}]"
 
 
 def add_show_command(commands: Commands) -> None:
@@ -141,6 +160,16 @@ def add_show_command(commands: Commands) -> None:
     )
     command.add_argument(
         "--to", dest="end", type=datetime.fromisoformat, metavar="TIME", help="excluded"
+    )
+    command.add_argument("--band", action="store_true", help="also print the normal range")
+    command.add_argument(
+        "--window",
+        type=int,
+        default=DEFAULT_WINDOW,
+        help=f"previous points behind each band (default: {DEFAULT_WINDOW}, i.e. 1 hour)",
+    )
+    command.add_argument(
+        "--k", type=float, default=DEFAULT_K, help=f"band half-width in std (default: {DEFAULT_K})"
     )
     add_db_option(command)
     command.set_defaults(run=run_show)
