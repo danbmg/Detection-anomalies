@@ -81,6 +81,17 @@ A single flagged point is noise: an alert fires only after `--confirm` flagged p
 That incident then stays open, without alerting again, until `--quiet` normal points in a row (default 3, i.e. 15 minutes).
 Each run appends its alerts to the log (`--log` to change it).
 
+### Plot
+
+```bash
+python -m anomaly plot traffic                                               # whole history -> data/traffic.png
+python -m anomaly plot traffic --from 2026-01-14T08:00 --to 2026-01-14T20:00 --out spike.png
+```
+
+The chart shows the value (blue line), its normal range (blue wash), flagged points (orange dots),
+alerts (black triangles at the top) and, when known, the true anomalies (gray spans).
+It accepts the same `--window`, `--k`, `--confirm` and `--quiet` settings as the other commands.
+
 ## Development
 
 | Command | Purpose |
