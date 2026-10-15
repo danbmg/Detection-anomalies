@@ -1,0 +1,27 @@
+#Fundamental .gitignore
+
+.vscode/
+*.out
+*.o
+*.a
+*.obj
+*~
+*lo
+*slo
+.vscode
+*.pdf
+*.txt
+learning.md
+.discord.env
+zip/
+.claude/
+*gcno
+*gcda
+.clang-format
+build/
+exit
+CLAUDE.md
+nanotekspice
+Nts/file/
+rom.bin
+G-OOP-400_nanotekspice/
