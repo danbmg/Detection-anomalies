@@ -21,6 +21,20 @@ source .venv/bin/activate   # optional: lets you type `python` instead of `.venv
 python -m anomaly --help    # lists the available commands
 ```
 
+### Simulate a metric
+
+```bash
+python -m anomaly simulate                  # 4 weeks of traffic + default anomalies -> data/traffic.csv
+python -m anomaly simulate --no-anomalies   # a clean series
+python -m anomaly simulate --weeks 2 --seed 7 \
+    --anomaly spike@2026-01-08T14:00/30min --anomaly drift@2026-01-12T00:00/2d
+```
+
+The metric is a web app's traffic in requests per minute, one point every 5 minutes, with a day/night cycle,
+quieter weekends and a nightly batch peak at 02:00 (normal, although higher than the daytime peak).
+The CSV has three columns: `timestamp`, `value` and `label`, the ground truth (`spike`, `drop`, `drift`, or empty when normal).
+The same seed always gives the same file.
+
 ## Development
 
 | Command | Purpose |
