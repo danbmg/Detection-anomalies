@@ -70,6 +70,17 @@ Each line shows the value, the expected value, the z-score and the ground truth 
 the summary says how many flags fall on a true anomaly.
 On a perfectly flat history a point equal to it is never flagged, and any change gets an infinite z-score.
 
+### Raise alerts
+
+```bash
+python -m anomaly alert traffic                  # prints the alerts and appends them to data/alerts.log
+python -m anomaly alert traffic --confirm 3      # require 3 flagged points in a row
+```
+
+A single flagged point is noise: an alert fires only after `--confirm` flagged points in a row (default 2).
+That incident then stays open, without alerting again, until `--quiet` normal points in a row (default 3, i.e. 15 minutes).
+Each run appends its alerts to the log (`--log` to change it).
+
 ## Development
 
 | Command | Purpose |

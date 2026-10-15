@@ -6,6 +6,7 @@ from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 
+from anomaly.alerting import DEFAULT_CONFIRM, DEFAULT_QUIET, Alert, raise_alerts
 from anomaly.detect import flag_deviations
 from anomaly.model import Point
 from anomaly.normal import DEFAULT_K, DEFAULT_WINDOW, Band, rolling_bands
@@ -17,6 +18,8 @@ from anomaly.simulate import (
     simulate,
 )
 from anomaly.storage import DEFAULT_DB, History, read_csv, write_csv
+
+DEFAULT_LOG = Path("data/alerts.log")
 
 # `type` keeps the alias lazy: the generic form only exists for the type checker.
 type Commands = argparse._SubParsersAction[argparse.ArgumentParser]
@@ -226,6 +229,64 @@ def add_detect_command(commands: Commands) -> None:
     command.set_defaults(run=run_detect)
 
 
+def run_alert(args: argparse.Namespace) -> int:
+    points = load_metric(args)
+    if points is None:
+        return 2
+    try:
+        flags = flag_deviations(points, args.window, args.k)
+        alerts = raise_alerts(points, flags, args.confirm, args.quiet)
+    except ValueError as error:
+        print(f"anomaly alert: {error}", file=sys.stderr)
+        return 2
+    alerts = [alert for alert in alerts if is_shown(alert.raised_at, args)]
+    args.log.parent.mkdir(parents=True, exist_ok=True)
+    with args.log.open("a") as log:
+        for alert in alerts:
+            line = describe_alert(args.metric, alert)
+            print(line)
+            log.write(line + "\n")
+    settings = f"confirm {args.confirm}, quiet {args.quiet}"
+    summary = f"{len(alerts)} alerts ({settings}), logged to {args.log}"
+    if any(point.label for point in points if is_shown(point.timestamp, args)):
+        summary += f", {sum(alert.label is not None for alert in alerts)} on a true anomaly"
+    print(summary)
+    return 0
+
+
+def describe_alert(metric: str, alert: Alert) -> str:
+    peak = alert.peak
+    when = alert.raised_at.isoformat(timespec="minutes")
+    since = alert.start.isoformat(timespec="minutes")
+    line = (
+        f"{when}  ALERT {metric}  since {since}  value {peak.value:.2f}"
+        f"  expected {peak.expected:.2f}  z {peak.z:+.2f}"
+    )
+    return f"{line}  {alert.label or ''}".rstrip()
+
+
+def add_alert_command(commands: Commands) -> None:
+    command = commands.add_parser("alert", help="raise one alert per lasting deviation (incident)")
+    add_metric_options(command)
+    add_band_options(command)
+    command.add_argument(
+        "--confirm",
+        type=positive_int,
+        default=DEFAULT_CONFIRM,
+        help=f"flagged points in a row to raise an alert (default: {DEFAULT_CONFIRM})",
+    )
+    command.add_argument(
+        "--quiet",
+        type=positive_int,
+        default=DEFAULT_QUIET,
+        help=f"normal points in a row that end an incident (default: {DEFAULT_QUIET})",
+    )
+    command.add_argument(
+        "--log", type=Path, default=DEFAULT_LOG, help=f"alerts are appended here ({DEFAULT_LOG})"
+    )
+    command.set_defaults(run=run_alert)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="anomaly",
@@ -236,6 +297,7 @@ def build_parser() -> argparse.ArgumentParser:
     add_import_command(commands)
     add_show_command(commands)
     add_detect_command(commands)
+    add_alert_command(commands)
     return parser
 
 
