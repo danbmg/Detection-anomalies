@@ -35,6 +35,18 @@ quieter weekends and a nightly batch peak at 02:00 (normal, although higher than
 The CSV has three columns: `timestamp`, `value` and `label`, the ground truth (`spike`, `drop`, `drift`, or empty when normal).
 The same seed always gives the same file.
 
+### Store and read the history
+
+```bash
+python -m anomaly simulate --store traffic          # also stores the series as metric "traffic"
+python -m anomaly import traffic data/traffic.csv   # or import any CSV with timestamp,value[,label] columns
+python -m anomaly show traffic --from 2026-01-14T13:50 --to 2026-01-14T14:40
+```
+
+The history is a SQLite file, `data/history.db` by default (`--db` to change it), with one row per metric and timestamp:
+importing the same points again replaces them instead of duplicating them.
+`--from` is included, `--to` is excluded, and points always come back oldest first.
+
 ## Development
 
 | Command | Purpose |

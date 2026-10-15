@@ -5,7 +5,8 @@ import random
 import re
 from dataclasses import dataclass
 from datetime import datetime, time, timedelta
-from enum import StrEnum
+
+from anomaly.model import Kind, Point
 
 STEP = timedelta(minutes=5)
 DEFAULT_START = datetime(2026, 1, 5)  # a Monday at midnight
@@ -16,12 +17,6 @@ WEEKEND_FACTOR = 0.7
 BATCH_START, BATCH_END = time(2, 0), time(2, 30)
 BATCH_EXTRA = 300.0  # added by the nightly batch job: higher than the daytime peak, yet normal
 NOISE = 0.05  # standard deviation of the noise, as a fraction of the level
-
-
-class Kind(StrEnum):
-    SPIKE = "spike"
-    DROP = "drop"
-    DRIFT = "drift"
 
 
 DEFAULT_SIZE = {Kind.SPIKE: 3.0, Kind.DROP: 0.2, Kind.DRIFT: 1.5}
@@ -49,13 +44,6 @@ class Anomaly:
             progress = (t - self.start) / self.duration  # grows from 0 to 1 across the drift
             return 1.0 + (self.size - 1.0) * progress
         return self.size
-
-
-@dataclass(frozen=True)
-class Point:
-    timestamp: datetime
-    value: float
-    label: Kind | None  # ground truth: the anomaly active at this point, None when normal
 
 
 def make_anomaly(kind: Kind, start: datetime, duration: timedelta) -> Anomaly:
