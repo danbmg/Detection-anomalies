@@ -5,13 +5,12 @@ from pathlib import Path
 import pytest
 
 from anomaly.__main__ import main
+from anomaly.model import Kind, Point
 from anomaly.simulate import (
     BATCH_EXTRA,
     DEFAULT_SIZE,
     DEFAULT_START,
     STEP,
-    Kind,
-    Point,
     default_anomalies,
     make_anomaly,
     normal_level,
