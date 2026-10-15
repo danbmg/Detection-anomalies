@@ -1,7 +1,6 @@
 """Command-line entry point: `python -m anomaly <command>`."""
 
 import argparse
-import csv
 import sys
 from collections.abc import Callable
 from datetime import datetime
@@ -10,11 +9,11 @@ from pathlib import Path
 from anomaly.simulate import (
     DEFAULT_START,
     Anomaly,
-    Point,
     default_anomalies,
     parse_anomaly,
     simulate,
 )
+from anomaly.storage import DEFAULT_DB, History, read_csv, write_csv
 
 # `type` keeps the alias lazy: the generic form only exists for the type checker.
 type Commands = argparse._SubParsersAction[argparse.ArgumentParser]
@@ -34,14 +33,10 @@ def anomaly_spec(text: str) -> Anomaly:
         raise argparse.ArgumentTypeError(str(error)) from error
 
 
-def write_csv(points: list[Point], path: Path) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", newline="") as file:
-        writer = csv.writer(file, lineterminator="\n")  # default is \r\n, which breaks awk/grep
-        writer.writerow(["timestamp", "value", "label"])
-        for point in points:
-            timestamp = point.timestamp.isoformat(timespec="minutes")
-            writer.writerow([timestamp, point.value, point.label or ""])
+def add_db_option(command: argparse.ArgumentParser) -> None:
+    command.add_argument(
+        "--db", type=Path, default=DEFAULT_DB, help=f"history database (default: {DEFAULT_DB})"
+    )
 
 
 def run_simulate(args: argparse.Namespace) -> int:
@@ -62,6 +57,10 @@ def run_simulate(args: argparse.Namespace) -> int:
     print(f"Wrote {len(points)} points ({first} -> {last}) to {args.out}")
     for anomaly in anomalies:
         print(f"  {anomaly.kind:<5}  {anomaly.start}  for {anomaly.duration}  x{anomaly.size}")
+    if args.store:
+        with History(args.db) as history:
+            new = history.add(args.store, points)
+        print(f"Stored in metric '{args.store}' ({args.db}): {new} new points")
     return 0
 
 
@@ -90,7 +89,61 @@ def add_simulate_command(commands: Commands) -> None:
     command.add_argument(
         "--out", type=Path, default=Path("data/traffic.csv"), help="(default: data/traffic.csv)"
     )
+    command.add_argument(
+        "--store", metavar="METRIC", help="also store the series in the history under this name"
+    )
+    add_db_option(command)
     command.set_defaults(run=run_simulate)
+
+
+def run_import(args: argparse.Namespace) -> int:
+    try:
+        points = read_csv(args.csv)
+    except (OSError, ValueError) as error:
+        print(f"anomaly import: {error}", file=sys.stderr)
+        return 2
+    with History(args.db) as history:
+        new = history.add(args.metric, points)
+    print(f"Read {len(points)} points from {args.csv}: {new} new in '{args.metric}' ({args.db})")
+    return 0
+
+
+def add_import_command(commands: Commands) -> None:
+    command = commands.add_parser("import", help="store a CSV file (timestamp,value[,label])")
+    command.add_argument("metric", help="name of the metric, e.g. traffic")
+    command.add_argument("csv", type=Path, help="CSV file to import")
+    add_db_option(command)
+    command.set_defaults(run=run_import)
+
+
+def run_show(args: argparse.Namespace) -> int:
+    if not args.db.exists():
+        print(f"anomaly show: no history at {args.db}, import a metric first", file=sys.stderr)
+        return 2
+    with History(args.db) as history:
+        known = history.metrics()
+        points = history.read(args.metric, args.start, args.end)
+    if args.metric not in known:
+        names = ", ".join(known) or "none"
+        print(f"anomaly show: unknown metric '{args.metric}' (known: {names})", file=sys.stderr)
+        return 2
+    for point in points:
+        timestamp = point.timestamp.isoformat(timespec="minutes")
+        print(f"{timestamp}  {point.value:>8.2f}  {point.label or ''}".rstrip())
+    return 0
+
+
+def add_show_command(commands: Commands) -> None:
+    command = commands.add_parser("show", help="print the stored points of a metric, oldest first")
+    command.add_argument("metric", help="name of the metric, e.g. traffic")
+    command.add_argument(
+        "--from", dest="start", type=datetime.fromisoformat, metavar="TIME", help="included"
+    )
+    command.add_argument(
+        "--to", dest="end", type=datetime.fromisoformat, metavar="TIME", help="excluded"
+    )
+    add_db_option(command)
+    command.set_defaults(run=run_show)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -100,6 +153,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     commands = parser.add_subparsers(dest="command", title="commands", metavar="<command>")
     add_simulate_command(commands)
+    add_import_command(commands)
+    add_show_command(commands)
     return parser
 
 
