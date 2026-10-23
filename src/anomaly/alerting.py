@@ -13,6 +13,9 @@ DEFAULT_CONFIRM = (
 # Points normaux d'affilée pour le fermer : 15 minutes de calme. Avec 1 heure, un faux incident
 # ouvert juste avant la chute simulée durait encore et l'avalait.
 DEFAULT_QUIET = 3
+# Une alarme CUSUM repart de 0 : une dérive qui dure redéclenche toutes les 2 heures environ.
+# C'est la même dérive tant qu'une alarme revient dans la journée.
+DRIFT_QUIET = 288
 
 
 @dataclass(frozen=True)
@@ -30,6 +33,11 @@ class Alert:
     @property
     def peak(self) -> Flag:
         return max(self.flags, key=lambda flag: abs(flag.z))
+
+    @property
+    def kind(self) -> Kind:
+        """Ce que le détecteur a vu (pic, chute, dérive), à comparer avec la vérité terrain."""
+        return self.peak.kind
 
     @property
     def label(self) -> Kind | None:
@@ -83,3 +91,8 @@ def raise_alerts(
         if alert is not None:
             alerts.append(alert)
     return alerts
+
+
+def raise_drift_alerts(points: Sequence[Point], drifts: Sequence[Flag]) -> list[Alert]:
+    """Une alerte par dérive. Une alarme CUSUM n'a pas besoin d'être confirmée : sa somme l'est."""
+    return raise_alerts(points, drifts, confirm=1, quiet=DRIFT_QUIET)

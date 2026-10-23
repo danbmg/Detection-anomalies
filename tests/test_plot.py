@@ -60,3 +60,13 @@ def test_plot_command_defaults_to_the_data_folder(
     monkeypatch.chdir(tmp_path)
     assert main(["plot", "m", "--window", "6", "--db", str(db)]) == 0
     assert (tmp_path / "data" / "m.png").exists()
+
+
+def test_plot_command_draws_drift_alerts(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    db, out = str(tmp_path / "h.db"), tmp_path / "t.png"
+    assert main(["simulate", "--out", str(tmp_path / "t.csv"), "--store", "t", "--db", db]) == 0
+    capsys.readouterr()
+    assert main(["plot", "t", "--method", "seasonal", "--db", db, "--out", str(out)]) == 0
+    assert "59 flagged, 4 alerts" in capsys.readouterr().out  # 2 spikes, the drop and the drift

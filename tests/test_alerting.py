@@ -4,11 +4,18 @@ from pathlib import Path
 import pytest
 
 from anomaly.__main__ import main
-from anomaly.alerting import Alert, Alerter, raise_alerts
-from anomaly.detect import Flag, flag_deviations
+from anomaly.alerting import Alert, Alerter, raise_alerts, raise_drift_alerts
+from anomaly.detect import Flag, flag_deviations, flag_drifts
 from anomaly.model import Kind, Point
-from anomaly.normal import Method
-from anomaly.simulate import BATCH_END, BATCH_START, DEFAULT_START, default_anomalies, simulate
+from anomaly.normal import Method, normal_bands
+from anomaly.simulate import (
+    BATCH_END,
+    BATCH_START,
+    DEFAULT_START,
+    Anomaly,
+    default_anomalies,
+    simulate,
+)
 from anomaly.storage import History
 
 T0 = datetime(2026, 1, 5)
@@ -101,7 +108,8 @@ def test_alert_command_prints_and_appends_to_the_log(
 
     assert main(args) == 0
     lines = capsys.readouterr().out.splitlines()
-    assert lines[0].split()[:5] == ["2026-01-05T00:35", "ALERT", "m", "since", "2026-01-05T00:30"]
+    start = ["2026-01-05T00:35", "ALERT", "m", "spike", "since", "2026-01-05T00:30"]
+    assert lines[0].split()[:6] == start
     assert lines[1] == f"1 alerts (rolling, confirm 2, quiet 3), logged to {log}"
     assert log.read_text().splitlines() == [lines[0]]
 
@@ -111,3 +119,49 @@ def test_alert_command_prints_and_appends_to_the_log(
     assert main([*args, "--confirm", "3"]) == 0
     last = capsys.readouterr().out.splitlines()[-1]
     assert last.startswith("0 alerts (rolling, confirm 3, quiet 3)")
+
+
+def drift_alerts(seed: int, anomalies: list[Anomaly]) -> list[Alert]:
+    points = simulate(DEFAULT_START, 4, seed, anomalies)
+    return raise_drift_alerts(points, flag_drifts(points, normal_bands(points, Method.SEASONAL)))
+
+
+@pytest.mark.parametrize("seed", [42, 1, 7])
+def test_the_slow_drift_raises_one_drift_alert_while_it_lasts(seed: int) -> None:
+    # The drift adds 50 % over 4 days, about 0.5 % per hour, under the 5 % noise of each point.
+    anomalies = default_anomalies(DEFAULT_START, 4)
+    drift = next(anomaly for anomaly in anomalies if anomaly.kind is Kind.DRIFT)
+    alerts = drift_alerts(seed, anomalies)
+    assert len(alerts) == 1  # it alarms again every 2 hours or so: still one incident
+    assert alerts[0].kind is Kind.DRIFT
+    assert drift.covers(alerts[0].raised_at)
+
+
+@pytest.mark.parametrize("seed", [42, 1, 7])
+def test_no_drift_alert_without_a_drift(seed: int) -> None:
+    anomalies = default_anomalies(DEFAULT_START, 4)
+    assert drift_alerts(seed, []) == []
+    # Spikes and the drop leave their band: the z-score raises them, never CUSUM.
+    no_drift = [anomaly for anomaly in anomalies if anomaly.kind is not Kind.DRIFT]
+    assert drift_alerts(seed, no_drift) == []
+
+
+def test_alert_command_tells_drifts_from_spikes_and_drops(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    db, log = str(tmp_path / "h.db"), str(tmp_path / "alerts.log")
+    assert main(["simulate", "--out", str(tmp_path / "t.csv"), "--store", "t", "--db", db]) == 0
+    capsys.readouterr()
+    assert main(["alert", "t", "--method", "seasonal", "--db", db, "--log", log]) == 0
+    lines = capsys.readouterr().out.splitlines()
+    # 4th column: what the detector saw; last one: the ground truth.
+    assert [(line.split()[3], line.split()[-1]) for line in lines[:-1]] == [
+        ("spike", "spike"),
+        ("spike", "spike"),
+        ("drop", "drop"),
+        ("drift", "drift"),
+    ]
+    assert "cusum" in lines[3]
+
+    assert main(["alert", "t", "--db", db, "--log", log]) == 0  # rolling: no CUSUM at all
+    assert "drift" not in [line.split()[3] for line in capsys.readouterr().out.splitlines()[:-1]]

@@ -10,7 +10,7 @@ from matplotlib.figure import Figure
 
 from anomaly.alerting import Alert
 from anomaly.detect import Flag
-from anomaly.model import Point
+from anomaly.model import Kind, Point
 from anomaly.normal import Band
 
 # Palette claire. Le bleu de la série et l'orange des flags passent tous les tests de daltonisme
@@ -82,18 +82,26 @@ def plot_metric(
     )
     for alert in alerts:
         axes.axvline(date2num(alert.raised_at), color=ALERT, lw=0.8, alpha=0.5, zorder=1)
-    axes.plot(
-        date2num([alert.raised_at for alert in alerts]),
-        [1.0] * len(alerts),
-        transform=axes.get_xaxis_transform(),  # x en dates, y au bord haut du graphique
-        ls="",
-        marker="v",
-        ms=8,
-        color=ALERT,
-        clip_on=False,
-        zorder=4,
-        label="Alert",
-    )
+    # même encre pour toutes les alertes : une dérive se distingue par un triangle creux
+    groups = [([alert for alert in alerts if alert.kind is not Kind.DRIFT], ALERT, "Alert")]
+    drifts = [alert for alert in alerts if alert.kind is Kind.DRIFT]
+    if drifts:  # pas de légende pour une dérive absente (méthode glissante)
+        groups.append((drifts, SURFACE, "Drift alert (CUSUM)"))
+    for group, face, label in groups:
+        axes.plot(
+            date2num([alert.raised_at for alert in group]),
+            [1.0] * len(group),
+            transform=axes.get_xaxis_transform(),  # x en dates, y au bord haut du graphique
+            ls="",
+            marker="v",
+            ms=8,
+            color=ALERT,
+            markerfacecolor=face,
+            markeredgewidth=1.5,
+            clip_on=False,
+            zorder=4,
+            label=label,
+        )
 
     values = [point.value for point in points]
     axes.set_ylim(
@@ -113,7 +121,7 @@ def plot_metric(
     axes.set_title(
         subtitle, loc="left", fontsize=9.5, color=TEXT, pad=16
     )  # de la place pour les alertes
-    axes.legend(loc="upper left", bbox_to_anchor=(0, -0.08), ncols=5, frameon=False, fontsize=9)
+    axes.legend(loc="upper left", bbox_to_anchor=(0, -0.08), ncols=6, frameon=False, fontsize=9)
 
     path.parent.mkdir(parents=True, exist_ok=True)
     figure.savefig(path, facecolor=SURFACE)
