@@ -1,4 +1,5 @@
 import math
+import random
 import statistics
 from collections.abc import Callable
 from datetime import datetime, timedelta
@@ -7,7 +8,17 @@ from pathlib import Path
 import pytest
 
 from anomaly.__main__ import main
-from anomaly.detect import Flag, flag_deviations, flag_drifts, z_score
+from anomaly.detect import (
+    ADAPT_EVERY,
+    ADAPT_HISTORY,
+    K_LIMITS,
+    Flag,
+    adapt_bands,
+    flag_deviations,
+    flag_drifts,
+    flag_outside,
+    z_score,
+)
 from anomaly.model import Kind, Point
 from anomaly.normal import Band, Method, is_weekend, normal_bands
 from anomaly.simulate import (
@@ -194,3 +205,61 @@ def test_flag_kind_says_what_the_detector_saw() -> None:
 def test_cusum_rejects_bad_settings(slack: float, threshold: float) -> None:
     with pytest.raises(ValueError):
         drifts_of([110] * 5, slack, threshold)
+
+
+def ks_of(
+    values: list[float],
+    every: int = ADAPT_EVERY,
+    history: int = ADAPT_HISTORY,
+    limits: tuple[float, float] = K_LIMITS,
+) -> list[float]:
+    """The k in use at each point, on a constant band 100 ± 3 x 10 (a value of 110 is z = +1)."""
+    bands = adapt_bands(points_of(values), [BAND] * len(values), every, history, limits)
+    return [band.k for band in bands if band is not None]
+
+
+def test_adaptive_k_is_recomputed_periodically_from_past_z_scores() -> None:
+    # Every |z| is 3.29: 10 % of the points go beyond 3.29, where the band expects 1.645, so the
+    # noise is twice what the band expects and k doubles. It waits for 10 z-scores behind it,
+    # then changes only every 5 points.
+    values = [132.9, 67.1] * 10
+    ks = ks_of(values, every=5, history=10, limits=(1.0, 10.0))
+    assert ks == [3] * 10 + [pytest.approx(6)] * 10
+
+
+def test_a_noisier_period_raises_k_and_a_calmer_one_lowers_it_within_limits() -> None:
+    # Four periods of 600 points (2 days), each noisier or calmer than the band expects.
+    rng = random.Random(0)
+    noise = [1.0] * 600 + [1.5] * 600 + [0.5] * 600 + [4.0] * 600
+    ks = ks_of([100 + 10 * n * rng.gauss(0, 1) for n in noise])
+    at_end = [ks[end - 1] for end in (600, 1200, 1800, 2400)]
+    assert at_end[0] == pytest.approx(3, rel=0.15)  # as expected: k stays near 3
+    assert at_end[1] == pytest.approx(4.5, rel=0.15)  # 1.5 x noisier: 1.5 x higher
+    assert at_end[2] == 2.5  # 3 x 0.5 = 1.5, held at the lower limit
+    assert at_end[3] == 6  # 3 x 4 = 12, held at the upper limit
+
+
+def test_adaptive_k_never_looks_at_its_own_point_or_later() -> None:
+    rng = random.Random(0)
+    values = [100 + 10 * rng.gauss(0, 1) for _ in range(40)]
+    before = ks_of(values, every=5, history=10)
+    i = 20  # a recompute point: its k comes from points 10 to 19
+    after = ks_of([*values[:i], 1000.0, *values[i + 1 :]], every=5, history=10)
+    assert after[: i + 5] == before[: i + 5]
+    assert after[i + 5] != before[i + 5]  # the next recompute is the first to see it
+
+
+def test_flags_use_the_k_of_their_band() -> None:
+    points = points_of([125, 125])
+    bands = [Band(100, 10, 3), Band(100, 10, 2)]  # 125 is z = 2.5: inside, then outside
+    assert [(flag.z, flag.k) for flag in flag_outside(points, bands)] == [(2.5, 2)]
+
+
+@pytest.mark.parametrize(
+    ("every", "history", "limits"), [(0, 288, (2.5, 6.0)), (12, 5, (2.5, 6.0)), (12, 288, (6, 2))]
+)
+def test_adaptive_k_rejects_bad_settings(
+    every: int, history: int, limits: tuple[float, float]
+) -> None:
+    with pytest.raises(ValueError):
+        ks_of([110.0] * 20, every=every, history=history, limits=limits)
