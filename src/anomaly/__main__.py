@@ -7,8 +7,14 @@ from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 
-from anomaly.alerting import DEFAULT_CONFIRM, DEFAULT_QUIET, Alert, raise_alerts
-from anomaly.detect import flag_deviations
+from anomaly.alerting import (
+    DEFAULT_CONFIRM,
+    DEFAULT_QUIET,
+    Alert,
+    raise_alerts,
+    raise_drift_alerts,
+)
+from anomaly.detect import DRIFT_SLACK, DRIFT_THRESHOLD, Flag, flag_deviations, flag_drifts
 from anomaly.model import Point
 from anomaly.normal import (
     DEFAULT_K,
@@ -222,24 +228,44 @@ def run_detect(args: argparse.Namespace) -> int:
     if points is None:
         return 2
     try:
+        bands = normal_bands(points, args.method, args.window, args.k)
         flags = flag_deviations(points, args.window, args.k, args.method)
+        drifts = find_drifts(points, bands, args.method)
     except ValueError as error:
         print(f"anomaly detect: {error}", file=sys.stderr)
         return 2
     flags = [flag for flag in flags if is_shown(flag.timestamp, args)]
-    for flag in flags:
+    drifts = [flag for flag in drifts if is_shown(flag.timestamp, args)]
+    for flag in sorted([*flags, *drifts], key=lambda flag: flag.timestamp):
         timestamp = flag.timestamp.isoformat(timespec="minutes")
-        line = f"{timestamp}  {flag.value:>8.2f}  expected {flag.expected:>8.2f}  z {flag.z:>+8.2f}"
+        line = f"{timestamp}  {flag.value:>8.2f}  expected {flag.expected:>8.2f}  {score(flag)}"
         print(f"{line}  {flag.label or ''}".rstrip())
     judged = [point for point in points if is_shown(point.timestamp, args)]
+    known = any(point.label for point in judged)  # vérité terrain connue : combien sont justes
     settings = f"{args.method}, window {args.window}, k {args.k}"
     summary = f"{len(flags)} flagged points out of {len(judged)} ({settings})"
-    if any(
-        point.label for point in judged
-    ):  # vérité terrain connue : dire combien de flags sont justes
+    if known:
         summary += f", {sum(flag.label is not None for flag in flags)} on a true anomaly"
     print(summary)
+    if args.method is Method.SEASONAL:
+        settings = f"CUSUM, slack {DRIFT_SLACK}, threshold {DRIFT_THRESHOLD}"
+        summary = f"{len(drifts)} drift alarms ({settings})"
+        if known:
+            summary += f", {sum(flag.label is not None for flag in drifts)} on a true anomaly"
+        print(summary)
     return 0
+
+
+def find_drifts(points: list[Point], bands: list[Band | None], method: Method) -> list[Flag]:
+    """Alarmes CUSUM, en saisonnier seulement : la moyenne glissante suit la dérive en 1 heure,
+    il ne resterait rien à additionner (178 fausses alarmes sur 209 sur la série simulée).
+    """
+    return flag_drifts(points, bands) if method is Method.SEASONAL else []
+
+
+def score(flag: Flag) -> str:
+    """Le z-score d'un écart, ou la somme CUSUM d'une dérive."""
+    return f"z {flag.z:>+8.2f}" if flag.cusum is None else f"cusum {flag.cusum:>+8.2f}"
 
 
 def add_detect_command(commands: Commands) -> None:
@@ -254,12 +280,17 @@ def run_alert(args: argparse.Namespace) -> int:
     if points is None:
         return 2
     try:
+        bands = normal_bands(points, args.method, args.window, args.k)
         flags = flag_deviations(points, args.window, args.k, args.method)
         alerts = raise_alerts(points, flags, args.confirm, args.quiet)
+        alerts += raise_drift_alerts(points, find_drifts(points, bands, args.method))
     except ValueError as error:
         print(f"anomaly alert: {error}", file=sys.stderr)
         return 2
-    alerts = [alert for alert in alerts if is_shown(alert.raised_at, args)]
+    alerts = sorted(
+        (alert for alert in alerts if is_shown(alert.raised_at, args)),
+        key=lambda alert: alert.raised_at,
+    )
     args.log.parent.mkdir(parents=True, exist_ok=True)
     with args.log.open("a") as log:
         for alert in alerts:
@@ -279,8 +310,8 @@ def describe_alert(metric: str, alert: Alert) -> str:
     when = alert.raised_at.isoformat(timespec="minutes")
     since = alert.start.isoformat(timespec="minutes")
     line = (
-        f"{when}  ALERT {metric}  since {since}  value {peak.value:.2f}"
-        f"  expected {peak.expected:.2f}  z {peak.z:+.2f}"
+        f"{when}  ALERT {metric}  {alert.kind:<5}  since {since}  value {peak.value:.2f}"
+        f"  expected {peak.expected:.2f}  {score(peak)}"
     )
     return f"{line}  {alert.label or ''}".rstrip()
 
@@ -319,6 +350,7 @@ def run_plot(args: argparse.Namespace) -> int:
         bands = normal_bands(points, args.method, args.window, args.k)
         flags = flag_deviations(points, args.window, args.k, args.method)
         alerts = raise_alerts(points, flags, args.confirm, args.quiet)
+        alerts += raise_drift_alerts(points, find_drifts(points, bands, args.method))
     except ValueError as error:
         print(f"anomaly plot: {error}", file=sys.stderr)
         return 2
