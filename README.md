@@ -145,6 +145,24 @@ The chart shows the value (blue line), its normal range (blue wash), flagged poi
 alerts (black triangles at the top, hollow for a drift) and, when known, the true anomalies (red bars).
 It accepts the same `--method`, `--window`, `--k`, `--adaptive`, `--confirm` and `--quiet` settings as the other commands.
 
+### Watch live
+
+```bash
+python -m anomaly simulate                                          # data/traffic.csv, not stored
+python -m anomaly watch live data/traffic.csv --method seasonal     # 4 weeks in 28 seconds, Ctrl+C to stop
+python -m anomaly watch live data/traffic.csv --speed 3600          # 1 hour of data per second
+```
+
+`watch` replays a CSV as if its points were arriving one by one: each new point is stored in the history,
+then judged, and its alerts are printed (and logged) right away, while the stream goes on.
+`--speed` is how many times faster than real time the points arrive (default 86400: one day of data per second;
+0 replays without waiting). It accepts the same detection and alert settings as `alert`.
+
+Points already in the history for that metric are not replayed: they only warm up the normal range,
+so a second run of the same file has nothing new to watch, and a file that continues the history picks up where it stopped.
+The batch commands run the very same point-by-point code over the whole series,
+so `watch` raises exactly the alerts that `alert` finds afterwards on the same points.
+
 ## Development
 
 | Command | Purpose |

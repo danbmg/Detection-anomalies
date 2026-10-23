@@ -65,17 +65,56 @@ def flag_deviations(
     return flag_outside(points, adapt_bands(points, bands) if adaptive else bands)
 
 
+def check_point(point: Point, band: Band | None) -> Flag | None:
+    """Un flag si |z| dépasse le k de la bande, donc si le point en sort. Jamais en chauffe."""
+    if band is None:
+        return None
+    z = z_score(point.value, band)
+    if abs(z) <= band.k:
+        return None
+    return Flag(point.timestamp, point.value, band.expected, z, point.label, k=band.k)
+
+
 def flag_outside(points: Sequence[Point], bands: Sequence[Band | None]) -> list[Flag]:
     """Points dont |z| dépasse le k de leur bande, donc hors de celle-ci. Jamais ceux en chauffe."""
-    flags = []
-    for point, band in zip(points, bands, strict=True):
+    flags = (check_point(point, band) for point, band in zip(points, bands, strict=True))
+    return [flag for flag in flags if flag is not None]
+
+
+class AdaptiveK:
+    """Change le k de chaque nouvelle bande : recalculé tous les `every` points sur les `history`
+    derniers z-scores, il monte d'autant que le bruit récent dépasse ce que la bande prévoit.
+
+    Toujours dans `limits`. Sans `history` z-scores derrière, k reste celui de départ.
+    """
+
+    def __init__(
+        self,
+        every: int = ADAPT_EVERY,
+        history: int = ADAPT_HISTORY,
+        limits: tuple[float, float] = K_LIMITS,
+    ) -> None:
+        low, high = limits
+        if every < 1 or history < 10 or not 0 < low <= high:
+            raise ValueError(f"bad adaptive settings: every {every}, history {history}, {limits}")
+        self.every, self.history, self.limits = every, history, limits
+        self.recent: deque[float] = deque(maxlen=history)  # |z| des derniers points jugés
+        self.noise = 1.0  # bruit récent / bruit prévu par la bande
+        self.seen = 0  # points reçus, en chauffe compris : le rythme des recalculs
+
+    def next(self, point: Point, band: Band | None) -> Band | None:
+        if self.seen % self.every == 0 and len(self.recent) == self.history:
+            # 90e centile plutôt que le maximum : les anomalies, rares, sont au-delà et le
+            # déplacent à peine. Le maximum, lui, serait l'anomalie elle-même.
+            q90 = sorted(self.recent)[int(0.9 * self.history)]
+            self.noise = q90 / NORMAL_Q90
+        self.seen += 1
         if band is None:
-            continue
-        z = z_score(point.value, band)
-        if abs(z) > band.k:
-            flag = Flag(point.timestamp, point.value, band.expected, z, point.label, k=band.k)
-            flags.append(flag)
-    return flags
+            return None
+        low, high = self.limits
+        adapted = replace(band, k=min(high, max(low, band.k * self.noise)))
+        self.recent.append(abs(z_score(point.value, band)))  # après : jamais l'actuel dans son k
+        return adapted
 
 
 def adapt_bands(
@@ -85,29 +124,46 @@ def adapt_bands(
     history: int = ADAPT_HISTORY,
     limits: tuple[float, float] = K_LIMITS,
 ) -> list[Band | None]:
-    """Les mêmes bandes, avec un k recalculé tous les `every` points sur les `history` derniers
-    z-scores : plus le bruit récent dépasse ce que la bande prévoit, plus k monte, dans `limits`.
+    """Les mêmes bandes, avec un k adaptatif : voir AdaptiveK."""
+    adaptive = AdaptiveK(every, history, limits)
+    return [adaptive.next(point, band) for point, band in zip(points, bands, strict=True)]
 
-    Tant qu'il n'y a pas `history` z-scores derrière, chaque bande garde son k de départ.
+
+class Cusum:
+    """Alarmes de dérive : les petits écarts d'un même côté, additionnés, dépassent `threshold`.
+
+    Une dérive lente reste dans sa bande, donc aucun z-score ne la voit, mais elle tire tous les
+    points du même côté. Il faut une valeur attendue qui ne la suit pas : la saisonnière, pas la
+    moyenne glissante. Les points hors bande restent au z-score : sinon un pic ferait une dérive.
     """
-    low, high = limits
-    if every < 1 or history < 10 or not 0 < low <= high:
-        raise ValueError(f"bad adaptive settings: every {every}, history {history}, {limits}")
-    recent: deque[float] = deque(maxlen=history)  # |z| des derniers points jugés, jamais l'actuel
-    noise = 1.0  # bruit récent / bruit prévu par la bande
-    adapted: list[Band | None] = []
-    for i, (point, band) in enumerate(zip(points, bands, strict=True)):
-        if i % every == 0 and len(recent) == history:
-            # 90e centile plutôt que le maximum : les anomalies, rares, sont au-delà et le
-            # déplacent à peine. Le maximum, lui, serait l'anomalie elle-même.
-            q90 = sorted(recent)[int(0.9 * history)]
-            noise = q90 / NORMAL_Q90
+
+    def __init__(self, slack: float = DRIFT_SLACK, threshold: float = DRIFT_THRESHOLD) -> None:
+        if slack < 0 or threshold <= 0:
+            raise ValueError(f"slack must be >= 0 and threshold > 0, got {slack} and {threshold}")
+        self.slack, self.threshold = slack, threshold
+        self.above = self.below = 0.0  # les deux sommes : dérive vers le haut, vers le bas
+
+    def next(self, point: Point, band: Band | None) -> Flag | None:
         if band is None:
-            adapted.append(None)
-            continue
-        adapted.append(replace(band, k=min(high, max(low, band.k * noise))))
-        recent.append(abs(z_score(point.value, band)))
-    return adapted
+            return None
+        z = z_score(point.value, band)
+        if abs(z) > band.k:
+            return None
+        # max(0, …) : une somme ne descend jamais sous 0
+        self.above = max(0.0, self.above + z - self.slack)
+        self.below = max(0.0, self.below - z - self.slack)
+        if self.above <= self.threshold and self.below <= self.threshold:
+            return None
+        cusum = self.above if self.above > self.threshold else -self.below
+        self.above = self.below = 0.0  # on repart de 0 : une dérive qui dure redéclenche plus loin
+        return Flag(point.timestamp, point.value, band.expected, z, point.label, cusum, band.k)
+
+
+def has_drifts(method: Method) -> bool:
+    """CUSUM en saisonnier seulement : la moyenne glissante suit une dérive en 1 heure, il ne
+    resterait rien à additionner (178 fausses alarmes sur 209 sur la série simulée).
+    """
+    return method is Method.SEASONAL
 
 
 def flag_drifts(
@@ -116,27 +172,7 @@ def flag_drifts(
     slack: float = DRIFT_SLACK,
     threshold: float = DRIFT_THRESHOLD,
 ) -> list[Flag]:
-    """Alarmes CUSUM : les petits écarts d'un même côté, additionnés, dépassent `threshold`.
-
-    Une dérive lente reste dans sa bande, donc aucun z-score ne la voit, mais elle tire tous les
-    points du même côté. Il faut une valeur attendue qui ne la suit pas : la saisonnière, pas la
-    moyenne glissante. Les points hors bande restent au z-score : sinon un pic ferait une dérive.
-    """
-    if slack < 0 or threshold <= 0:
-        raise ValueError(f"slack must be >= 0 and threshold > 0, got {slack} and {threshold}")
-    above = below = 0.0  # les deux sommes : dérive vers le haut, dérive vers le bas
-    flags = []
-    for point, band in zip(points, bands, strict=True):
-        if band is None:
-            continue
-        z = z_score(point.value, band)
-        if abs(z) > band.k:
-            continue
-        above = max(0.0, above + z - slack)  # max(0, …) : une somme ne descend jamais sous 0
-        below = max(0.0, below - z - slack)
-        if above > threshold or below > threshold:
-            cusum = above if above > threshold else -below
-            drift = Flag(point.timestamp, point.value, band.expected, z, point.label, cusum, band.k)
-            flags.append(drift)
-            above = below = 0.0  # on repart de 0 : une dérive qui dure redéclenche plus loin
-    return flags
+    """Alarmes CUSUM sur toute une série : voir Cusum."""
+    cusum = Cusum(slack, threshold)
+    drifts = (cusum.next(point, band) for point, band in zip(points, bands, strict=True))
+    return [drift for drift in drifts if drift is not None]
