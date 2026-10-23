@@ -1,6 +1,7 @@
 """Command-line entry point: `python -m anomaly <command>`."""
 
 import argparse
+import os
 import sys
 from collections.abc import Callable
 from datetime import datetime
@@ -354,7 +355,13 @@ def main(argv: list[str] | None = None) -> int:
         parser.print_help()
         return 1
     run: Callable[[argparse.Namespace], int] = args.run
-    return run(args)
+    try:
+        return run(args)
+    except BrokenPipeError:
+        # The reader closed the pipe (`| head`): stop quietly. Pointing stdout at
+        # devnull keeps Python's exit-time flush from raising a second time.
+        os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+        return 0
 
 
 if __name__ == "__main__":
