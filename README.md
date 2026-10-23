@@ -163,6 +163,37 @@ so a second run of the same file has nothing new to watch, and a file that conti
 The batch commands run the very same point-by-point code over the whole series,
 so `watch` raises exactly the alerts that `alert` finds afterwards on the same points.
 
+### Evaluate
+
+```bash
+python -m anomaly evaluate             # one simulated series (seed 42), every method side by side
+python -m anomaly evaluate --runs 10   # 10 series (seeds 42 to 51), added up
+```
+
+`evaluate` simulates 4 weeks with the default anomalies (seed 42 unless `--seed`, so the same table every time)
+and runs every method on them with the same `--k`, `--confirm` and `--quiet`.
+An alert is correct when it is raised inside a true anomaly; otherwise it is a false alert (false positive).
+A true anomaly without any alert is missed (false negative).
+Precision is the share of alerts that are correct, recall the share of true anomalies that got an alert,
+and delay the mean time from the start of an anomaly to its first alert.
+Precision counts alerts and recall counts anomalies: three alerts during the same anomaly are three correct alerts,
+but one anomaly found.
+
+On 10 series (`--runs 10`):
+
+| method | alerts | false | missed | precision | recall | delay |
+|---|---|---|---|---|---|---|
+| fixed threshold | 64 | 0 | 20 (night spikes, drops) | 100 % | 50 % | 15.5 h |
+| rolling | 386 | 314 | 6 | 19 % | 85 % | 1.4 h |
+| rolling, adaptive k | 11 | 11 | 40 (all) | 0 % | 0 % | - |
+| seasonal | 42 | 1 | 0 | 98 % | 100 % | 2.5 h |
+| seasonal, adaptive k | 45 | 4 | 0 | 91 % | 100 % | 2.4 h |
+
+The fixed threshold (`--method fixed`, available in every command) is the same band, mean ± `--k` standard deviations,
+but learned once on the first week (`--window`, default 2016 points) and then frozen.
+It never fires on the nightly batch, but only because it sits above it:
+the night spike and the drop stay inside, and the drift is caught only when its peaks cross it, a day later.
+
 ## Development
 
 | Command | Purpose |

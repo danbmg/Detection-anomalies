@@ -4,8 +4,9 @@ import argparse
 import os
 import sys
 import time
+from collections import Counter
 from collections.abc import Callable
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from anomaly.alerting import (
@@ -26,10 +27,12 @@ from anomaly.detect import (
     flag_outside,
     has_drifts,
 )
-from anomaly.model import Point
+from anomaly.evaluate import Score, score_alerts
+from anomaly.model import Kind, Point
 from anomaly.normal import (
     DEFAULT_K,
     DEFAULT_WINDOW,
+    FIXED_WINDOW,
     SEASONAL_WINDOW,
     Band,
     Method,
@@ -174,13 +177,14 @@ def add_band_options(command: argparse.ArgumentParser) -> None:
         choices=tuple(Method),
         default=Method.ROLLING,
         help="rolling: mean of the last points; seasonal: same time on previous days of the same "
-        "kind, weekday or weekend (default: rolling)",
+        "kind, weekday or weekend; fixed: one band learned on the first points, then frozen "
+        "(default: rolling)",
     )
     command.add_argument(
         "--window",
         type=int,
         help=f"previous points behind each band (default: {DEFAULT_WINDOW}, i.e. 1 hour, "
-        f"rolling; {SEASONAL_WINDOW}, i.e. 1 day, seasonal)",
+        f"rolling; {SEASONAL_WINDOW}, i.e. 1 day, seasonal; {FIXED_WINDOW}, i.e. 1 week, fixed)",
     )
     command.add_argument(
         "--k", type=float, default=DEFAULT_K, help=f"band half-width in std (default: {DEFAULT_K})"
@@ -490,6 +494,83 @@ def add_watch_command(commands: Commands) -> None:
     command.set_defaults(run=run_watch)
 
 
+# Méthodes comparées par `evaluate`, du seuil fixe (la référence du sujet) à la plus complète.
+EVALUATED = (
+    ("fixed threshold", Method.FIXED, False),
+    ("rolling", Method.ROLLING, False),
+    ("rolling, adaptive k", Method.ROLLING, True),
+    ("seasonal", Method.SEASONAL, False),
+    ("seasonal, adaptive k", Method.SEASONAL, True),
+)
+
+
+def run_evaluate(args: argparse.Namespace) -> int:
+    anomalies = default_anomalies(DEFAULT_START, 4)
+    scores = {name: Score() for name, _, _ in EVALUATED}
+    for seed in range(args.seed, args.seed + args.runs):
+        points = simulate(DEFAULT_START, 4, seed, anomalies)
+        for name, method, adaptive in EVALUATED:
+            try:
+                detector = Detector(method, None, args.k, adaptive, args.confirm, args.quiet)
+            except ValueError as error:
+                print(f"anomaly evaluate: {error}", file=sys.stderr)
+                return 2
+            alerts = [alert for point in points for alert in detector.feed(point)]
+            scores[name] += score_alerts(points, alerts)
+
+    last = args.seed + args.runs - 1
+    seeds = f"seed {args.seed}" if args.runs == 1 else f"seeds {args.seed} to {last}"
+    kinds = ", ".join(anomaly.kind for anomaly in anomalies)
+    print(f"Simulated traffic, 4 weeks, {seeds}: {len(anomalies)} true anomalies each ({kinds})")
+    print(f"k {args.k}, confirm {args.confirm}, quiet {args.quiet}\n")
+    header = ("method", "alerts", "false", "missed", "precision", "recall", "delay", "missed kinds")
+    print(
+        f"{header[0]:<22}{header[1]:>7}{header[2]:>7}{header[3]:>7}{header[4]:>11}"
+        f"{header[5]:>8}{header[6]:>9}  {header[7]}"
+    )
+    for name, result in scores.items():
+        print(
+            f"{name:<22}{result.alerts:>7}{result.false:>7}{len(result.missed):>7}"
+            f"{percent(result.precision):>11}{percent(result.recall):>8}"
+            f"{hours(result.mean_delay):>9}  {count_kinds(result.missed)}".rstrip()
+        )
+    print(
+        "\nfalse      alerts raised outside every true anomaly (false positives)\n"
+        "missed     true anomalies without any alert (false negatives)\n"
+        "precision  share of the alerts that are correct\n"
+        "recall     share of the true anomalies that got an alert\n"
+        "delay      mean time from the start of a true anomaly to its first alert"
+    )
+    return 0
+
+
+def percent(share: float | None) -> str:
+    return "-" if share is None else f"{share:.0%}"
+
+
+def hours(delay: timedelta | None) -> str:
+    return "-" if delay is None else f"{delay / timedelta(hours=1):.1f} h"
+
+
+def count_kinds(kinds: tuple[Kind, ...]) -> str:
+    return ", ".join(kind if n == 1 else f"{kind} x{n}" for kind, n in Counter(kinds).items())
+
+
+def add_evaluate_command(commands: Commands) -> None:
+    command = commands.add_parser(
+        "evaluate", help="compare every method with the ground truth of simulated series"
+    )
+    command.add_argument("--seed", type=int, default=42, help="first series (default: 42)")
+    command.add_argument(
+        "--runs", type=positive_int, default=1, help="series to add up, from --seed (default: 1)"
+    )
+    command.add_argument(
+        "--k", type=float, default=DEFAULT_K, help=f"band half-width in std (default: {DEFAULT_K})"
+    )
+    add_alert_options(command)
+    command.set_defaults(run=run_evaluate)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="anomaly",
@@ -503,6 +584,7 @@ def build_parser() -> argparse.ArgumentParser:
     add_alert_command(commands)
     add_plot_command(commands)
     add_watch_command(commands)
+    add_evaluate_command(commands)
     return parser
 
 
