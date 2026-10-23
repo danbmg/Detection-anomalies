@@ -5,7 +5,7 @@ import pytest
 
 from anomaly.__main__ import main
 from anomaly.alerting import Alert, Alerter, raise_alerts, raise_drift_alerts
-from anomaly.detect import Flag, flag_deviations, flag_drifts
+from anomaly.detect import Flag, adapt_bands, flag_deviations, flag_drifts
 from anomaly.model import Kind, Point
 from anomaly.normal import Method, normal_bands
 from anomaly.simulate import (
@@ -14,6 +14,7 @@ from anomaly.simulate import (
     DEFAULT_START,
     Anomaly,
     default_anomalies,
+    normal_level,
     simulate,
 )
 from anomaly.storage import History
@@ -110,7 +111,8 @@ def test_alert_command_prints_and_appends_to_the_log(
     lines = capsys.readouterr().out.splitlines()
     start = ["2026-01-05T00:35", "ALERT", "m", "spike", "since", "2026-01-05T00:30"]
     assert lines[0].split()[:6] == start
-    assert lines[1] == f"1 alerts (rolling, confirm 2, quiet 3), logged to {log}"
+    assert lines[0].split()[-2:] == ["k", "3.00"]  # the threshold in use, logged with the alert
+    assert lines[1] == f"1 alerts (rolling, k 3.0, confirm 2, quiet 3), logged to {log}"
     assert log.read_text().splitlines() == [lines[0]]
 
     assert main(args) == 0  # a second run appends: the log keeps every run
@@ -118,7 +120,7 @@ def test_alert_command_prints_and_appends_to_the_log(
 
     assert main([*args, "--confirm", "3"]) == 0
     last = capsys.readouterr().out.splitlines()[-1]
-    assert last.startswith("0 alerts (rolling, confirm 3, quiet 3)")
+    assert last.startswith("0 alerts (rolling, k 3.0, confirm 3, quiet 3)")
 
 
 def drift_alerts(seed: int, anomalies: list[Anomaly]) -> list[Alert]:
@@ -165,3 +167,51 @@ def test_alert_command_tells_drifts_from_spikes_and_drops(
 
     assert main(["alert", "t", "--db", db, "--log", log]) == 0  # rolling: no CUSUM at all
     assert "drift" not in [line.split()[3] for line in capsys.readouterr().out.splitlines()[:-1]]
+
+
+def with_a_noisy_day(points: list[Point], factor: float) -> list[Point]:
+    """The same series, with `factor` x more noise on its 12th day (a Friday)."""
+    day = DEFAULT_START + timedelta(days=11)
+    noisy = []
+    for point in points:
+        level = normal_level(point.timestamp)
+        if day <= point.timestamp < day + timedelta(days=1):
+            point = Point(point.timestamp, max(0.0, level + factor * (point.value - level)), None)
+        noisy.append(point)
+    return noisy
+
+
+def seasonal_alerts(points: list[Point], adaptive: bool) -> list[Alert]:
+    flags = flag_deviations(points, method=Method.SEASONAL, adaptive=adaptive)
+    bands = normal_bands(points, Method.SEASONAL)
+    drifts = flag_drifts(points, adapt_bands(points, bands) if adaptive else bands)
+    return raise_alerts(points, flags) + raise_drift_alerts(points, drifts)
+
+
+def test_adaptive_k_raises_fewer_false_alerts_on_a_noisier_day() -> None:
+    points = with_a_noisy_day(simulate(DEFAULT_START, 4, 42, []), 3.0)
+    fixed, adaptive = (len(seasonal_alerts(points, adaptive)) for adaptive in (False, True))
+    assert (fixed, adaptive) == (5, 0)  # without anomalies, every alert is false
+
+
+def test_adaptive_k_still_alerts_on_every_simulated_anomaly() -> None:
+    anomalies = default_anomalies(DEFAULT_START, 4)
+    alerts = seasonal_alerts(simulate(DEFAULT_START, 4, 42, anomalies), adaptive=True)
+    true = sorted(alert.kind for alert in alerts if alert.label is not None)
+    assert true == ["drift", "drop", "spike", "spike"]
+    assert all(2.5 <= alert.peak.k <= 6 for alert in alerts)
+
+
+def test_alert_command_logs_the_adaptive_k(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    db, log = str(tmp_path / "h.db"), tmp_path / "alerts.log"
+    assert main(["simulate", "--out", str(tmp_path / "t.csv"), "--store", "t", "--db", db]) == 0
+    capsys.readouterr()
+    args = ["alert", "t", "--method", "seasonal", "--adaptive", "--db", db, "--log", str(log)]
+    assert main(args) == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert "(seasonal, k 3.0 adaptive, confirm 2, quiet 3)" in lines[-1]
+    tokens = [line.split() for line in log.read_text().splitlines()]
+    ks = [float(line[line.index("k") + 1]) for line in tokens]
+    assert len(set(ks)) > 1  # not one fixed k

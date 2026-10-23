@@ -88,6 +88,25 @@ Points outside their band are left to the z-score, so a spike or a drop is never
 The simulated drift (+50 % over 4 days) raises its alert about 10 hours after it starts.
 The rolling method has no CUSUM: its expected value follows a drift within the hour, leaving nothing to add up.
 
+### Adaptive sensitivity
+
+```bash
+python -m anomaly alert traffic --method seasonal --adaptive   # each alert ends with the k in use
+```
+
+With `--adaptive`, k is no longer fixed: every hour, it is recomputed from the z-scores of the last day (288 points).
+If the band were right, 10 % of the points would be more than 1.645 standard deviations away (bell curve).
+When 10 % of the recent points are more than 2 x 1.645 away, the noise is twice what the band expects, so k doubles;
+when they stay closer, k goes down. It always stays between 2.5 and 6, and `--k` is only the starting value.
+The 90th percentile is used rather than the largest z-scores, which would be the anomalies themselves.
+
+On a day with 3 times more noise, the seasonal method raises 5 false alerts with a fixed k and none with an adaptive one
+(series of seed 42 without anomalies); on 11 simulated series, it catches the same anomalies.
+Limits: an anomaly lasting more than about 10 % of a day (2.4 hours) raises k for the next day;
+after the simulated drift, k drops to 2.5 while the band is still too wide, which costs one false alert on seed 42.
+With the rolling method, whose z-scores are wide because its band lags behind the daily cycle, k rises up to 5:
+1 alert instead of 43, but no longer any on a true anomaly.
+
 ### Detect deviations
 
 ```bash
@@ -112,8 +131,8 @@ python -m anomaly alert traffic --confirm 3      # require 3 flagged points in a
 A single flagged point is noise: an alert fires only after `--confirm` flagged points in a row (default 2).
 That incident then stays open, without alerting again, until `--quiet` normal points in a row (default 3, i.e. 15 minutes).
 Each run appends its alerts to the log (`--log` to change it).
-Each alert says what the detector saw: `spike` (above the band), `drop` (below it) or `drift` (CUSUM);
-the last column is the ground truth, when known.
+Each alert says what the detector saw: `spike` (above the band), `drop` (below it) or `drift` (CUSUM),
+then the `k` in use at that point; the last column is the ground truth, when known.
 
 ### Plot
 
@@ -124,7 +143,7 @@ python -m anomaly plot traffic --from 2026-01-14T08:00 --to 2026-01-14T20:00 --o
 
 The chart shows the value (blue line), its normal range (blue wash), flagged points (orange dots),
 alerts (black triangles at the top, hollow for a drift) and, when known, the true anomalies (red bars).
-It accepts the same `--method`, `--window`, `--k`, `--confirm` and `--quiet` settings as the other commands.
+It accepts the same `--method`, `--window`, `--k`, `--adaptive`, `--confirm` and `--quiet` settings as the other commands.
 
 ## Development
 

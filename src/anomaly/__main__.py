@@ -14,7 +14,15 @@ from anomaly.alerting import (
     raise_alerts,
     raise_drift_alerts,
 )
-from anomaly.detect import DRIFT_SLACK, DRIFT_THRESHOLD, Flag, flag_deviations, flag_drifts
+from anomaly.detect import (
+    DRIFT_SLACK,
+    DRIFT_THRESHOLD,
+    K_LIMITS,
+    Flag,
+    adapt_bands,
+    flag_drifts,
+    flag_outside,
+)
 from anomaly.model import Point
 from anomaly.normal import (
     DEFAULT_K,
@@ -166,6 +174,22 @@ def add_band_options(command: argparse.ArgumentParser) -> None:
     command.add_argument(
         "--k", type=float, default=DEFAULT_K, help=f"band half-width in std (default: {DEFAULT_K})"
     )
+    low, high = K_LIMITS
+    command.add_argument(
+        "--adaptive",
+        action="store_true",
+        help=f"recompute k every hour from the last day's z-scores: up when the recent noise is "
+        f"higher than the band expects, down when lower, between {low:g} and {high:g}",
+    )
+
+
+def compute_bands(points: list[Point], args: argparse.Namespace) -> list[Band | None]:
+    bands = normal_bands(points, args.method, args.window, args.k)
+    return adapt_bands(points, bands) if args.adaptive else bands
+
+
+def adaptive_note(args: argparse.Namespace) -> str:
+    return " adaptive" if args.adaptive else ""
 
 
 def load_metric(args: argparse.Namespace) -> list[Point] | None:
@@ -195,7 +219,7 @@ def run_show(args: argparse.Namespace) -> int:
     bands: list[Band | None] = [None] * len(points)
     if args.band:
         try:
-            bands = normal_bands(points, args.method, args.window, args.k)
+            bands = compute_bands(points, args)
         except ValueError as error:
             print(f"anomaly show: {error}", file=sys.stderr)
             return 2
@@ -228,8 +252,8 @@ def run_detect(args: argparse.Namespace) -> int:
     if points is None:
         return 2
     try:
-        bands = normal_bands(points, args.method, args.window, args.k)
-        flags = flag_deviations(points, args.window, args.k, args.method)
+        bands = compute_bands(points, args)
+        flags = flag_outside(points, bands)
         drifts = find_drifts(points, bands, args.method)
     except ValueError as error:
         print(f"anomaly detect: {error}", file=sys.stderr)
@@ -242,7 +266,7 @@ def run_detect(args: argparse.Namespace) -> int:
         print(f"{line}  {flag.label or ''}".rstrip())
     judged = [point for point in points if is_shown(point.timestamp, args)]
     known = any(point.label for point in judged)  # vérité terrain connue : combien sont justes
-    settings = f"{args.method}, window {args.window}, k {args.k}"
+    settings = f"{args.method}, window {args.window}, k {args.k}{adaptive_note(args)}"
     summary = f"{len(flags)} flagged points out of {len(judged)} ({settings})"
     if known:
         summary += f", {sum(flag.label is not None for flag in flags)} on a true anomaly"
@@ -280,8 +304,8 @@ def run_alert(args: argparse.Namespace) -> int:
     if points is None:
         return 2
     try:
-        bands = normal_bands(points, args.method, args.window, args.k)
-        flags = flag_deviations(points, args.window, args.k, args.method)
+        bands = compute_bands(points, args)
+        flags = flag_outside(points, bands)
         alerts = raise_alerts(points, flags, args.confirm, args.quiet)
         alerts += raise_drift_alerts(points, find_drifts(points, bands, args.method))
     except ValueError as error:
@@ -297,7 +321,8 @@ def run_alert(args: argparse.Namespace) -> int:
             line = describe_alert(args.metric, alert)
             print(line)
             log.write(line + "\n")
-    settings = f"{args.method}, confirm {args.confirm}, quiet {args.quiet}"
+    k = f"k {args.k}{adaptive_note(args)}"
+    settings = f"{args.method}, {k}, confirm {args.confirm}, quiet {args.quiet}"
     summary = f"{len(alerts)} alerts ({settings}), logged to {args.log}"
     if any(point.label for point in points if is_shown(point.timestamp, args)):
         summary += f", {sum(alert.label is not None for alert in alerts)} on a true anomaly"
@@ -311,7 +336,7 @@ def describe_alert(metric: str, alert: Alert) -> str:
     since = alert.start.isoformat(timespec="minutes")
     line = (
         f"{when}  ALERT {metric}  {alert.kind:<5}  since {since}  value {peak.value:.2f}"
-        f"  expected {peak.expected:.2f}  {score(peak)}"
+        f"  expected {peak.expected:.2f}  {score(peak)}  k {peak.k:.2f}"
     )
     return f"{line}  {alert.label or ''}".rstrip()
 
@@ -347,8 +372,8 @@ def run_plot(args: argparse.Namespace) -> int:
     if points is None:
         return 2
     try:
-        bands = normal_bands(points, args.method, args.window, args.k)
-        flags = flag_deviations(points, args.window, args.k, args.method)
+        bands = compute_bands(points, args)
+        flags = flag_outside(points, bands)
         alerts = raise_alerts(points, flags, args.confirm, args.quiet)
         alerts += raise_drift_alerts(points, find_drifts(points, bands, args.method))
     except ValueError as error:
@@ -363,7 +388,8 @@ def run_plot(args: argparse.Namespace) -> int:
     alerts = [alert for alert in alerts if is_shown(alert.raised_at, args)]
     first, last = (points[i].timestamp.isoformat(timespec="minutes") for i in (0, -1))
     subtitle = (
-        f"{first} → {last}   ·   {args.method}, window {args.window} points, k {args.k:g}, "
+        f"{first} → {last}   ·   {args.method}, window {args.window} points, "
+        f"k {args.k:g}{adaptive_note(args)}, "
         f"confirm {args.confirm}, quiet {args.quiet}   ·   "
         f"{len(flags)} flagged points, {len(alerts)} alerts"
     )

@@ -63,10 +63,11 @@ def plot_metric(
         ):  # une anomalie de 30 min fait moins d'un pixel : les bords la montrent
             axes.axvline(date2num(edge), color=TRUTH, lw=2.5, alpha=0.9, zorder=2)
 
-    k = next((band.k for band in bands if band is not None), math.nan)
+    ks = {band.k for band in bands if band is not None}  # plusieurs valeurs : k adaptatif
+    k = f"{min(ks):g}" if len(ks) == 1 else "k"
     lower = [band.lower if band else math.nan for band in bands]  # nan : en chauffe, pas de bande
     upper = [band.upper if band else math.nan for band in bands]
-    band_label = f"Normal range (± {k:g} std)"
+    band_label = f"Normal range (± {k} std)"
     axes.fill_between(x, lower, upper, color=SERIES, alpha=0.14, lw=0, label=band_label)
     axes.plot(x, [point.value for point in points], color=SERIES, lw=1.1, label="Value")
 
