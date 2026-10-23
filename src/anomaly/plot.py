@@ -19,7 +19,7 @@ SURFACE = "#fcfcfb"
 SERIES = "#2a78d6"  # la métrique et sa bande normale : la bande est la plage propre de la série
 FLAG = "#eb6834"
 ALERT = "#0b0b0b"
-TRUTH = "#c3c2b7"  # vérité terrain : un aplat gris discret derrière les données
+TRUTH = "#d4001a"  # vérité terrain : rouge vif, pour qu'on voie même les anomalies très courtes
 TEXT = "#52514e"
 MUTED = "#898781"
 GRID = "#e1e0d9"
@@ -56,7 +56,12 @@ def plot_metric(
 
     for i, (start, end) in enumerate(truth_spans(points)):
         label = "True anomaly (ground truth)" if i == 0 else None
-        axes.axvspan(date2num(start), date2num(end), color=TRUTH, alpha=0.45, lw=0, label=label)
+        axes.axvspan(date2num(start), date2num(end), color=TRUTH, alpha=0.2, lw=0, label=label)
+        for edge in (
+            start,
+            end,
+        ):  # une anomalie de 30 min fait moins d'un pixel : les bords la montrent
+            axes.axvline(date2num(edge), color=TRUTH, lw=2.5, alpha=0.9, zorder=2)
 
     k = next((band.k for band in bands if band is not None), math.nan)
     lower = [band.lower if band else math.nan for band in bands]  # nan : en chauffe, pas de bande
