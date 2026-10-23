@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from anomaly.model import Kind, Point
-from anomaly.normal import DEFAULT_K, DEFAULT_WINDOW, Band, rolling_bands
+from anomaly.normal import DEFAULT_K, Band, Method, normal_bands
 
 
 @dataclass(frozen=True)
@@ -27,10 +27,13 @@ def z_score(value: float, band: Band) -> float:
 
 
 def flag_deviations(
-    points: Sequence[Point], window: int = DEFAULT_WINDOW, k: float = DEFAULT_K
+    points: Sequence[Point],
+    window: int | None = None,
+    k: float = DEFAULT_K,
+    method: Method = Method.ROLLING,
 ) -> list[Flag]:
     """Points dont |z| dépasse k, donc hors de leur bande. Jamais ceux en chauffe."""
-    bands = rolling_bands([point.value for point in points], window, k)
+    bands = normal_bands(points, method, window, k)
     flags = []
     for point, band in zip(points, bands, strict=True):
         if band is None:

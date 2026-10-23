@@ -7,7 +7,8 @@ from anomaly.__main__ import main
 from anomaly.alerting import Alert, Alerter, raise_alerts
 from anomaly.detect import Flag, flag_deviations
 from anomaly.model import Kind, Point
-from anomaly.simulate import DEFAULT_START, default_anomalies, simulate
+from anomaly.normal import Method
+from anomaly.simulate import BATCH_END, BATCH_START, DEFAULT_START, default_anomalies, simulate
 from anomaly.storage import History
 
 T0 = datetime(2026, 1, 5)
@@ -69,6 +70,25 @@ def test_every_simulated_spike_and_drop_raises_an_alert() -> None:
         assert any(anomaly.covers(alert.raised_at) for alert in alerts), anomaly
 
 
+def test_seasonal_method_raises_no_alert_on_a_clean_series() -> None:
+    # Without anomalies every alert is false. The rolling method alerts on the nightly batch,
+    # the seasonal one expects it.
+    points = simulate(DEFAULT_START, 4, 42, [])
+    rolling = raise_alerts(points, flag_deviations(points))
+    assert any(BATCH_START <= alert.start.time() < BATCH_END for alert in rolling)
+    assert raise_alerts(points, flag_deviations(points, method=Method.SEASONAL)) == []
+
+
+@pytest.mark.parametrize("seed", [42, 1, 7])
+def test_seasonal_method_still_alerts_on_every_spike_and_drop(seed: int) -> None:
+    anomalies = default_anomalies(DEFAULT_START, 4)
+    points = simulate(DEFAULT_START, 4, seed, anomalies)
+    alerts = raise_alerts(points, flag_deviations(points, method=Method.SEASONAL))
+    for anomaly in anomalies:
+        if anomaly.kind is not Kind.DRIFT:  # a slow drift needs its own detector
+            assert any(anomaly.covers(alert.raised_at) for alert in alerts), anomaly
+
+
 def test_alert_command_prints_and_appends_to_the_log(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -82,11 +102,12 @@ def test_alert_command_prints_and_appends_to_the_log(
     assert main(args) == 0
     lines = capsys.readouterr().out.splitlines()
     assert lines[0].split()[:5] == ["2026-01-05T00:35", "ALERT", "m", "since", "2026-01-05T00:30"]
-    assert lines[1] == f"1 alerts (confirm 2, quiet 3), logged to {log}"
+    assert lines[1] == f"1 alerts (rolling, confirm 2, quiet 3), logged to {log}"
     assert log.read_text().splitlines() == [lines[0]]
 
     assert main(args) == 0  # a second run appends: the log keeps every run
     assert len(log.read_text().splitlines()) == 2
 
     assert main([*args, "--confirm", "3"]) == 0
-    assert capsys.readouterr().out.splitlines()[-1].startswith("0 alerts (confirm 3, quiet 3)")
+    last = capsys.readouterr().out.splitlines()[-1]
+    assert last.startswith("0 alerts (rolling, confirm 3, quiet 3)")
