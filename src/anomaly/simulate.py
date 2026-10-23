@@ -108,7 +108,7 @@ def parse_anomaly(spec: str) -> Anomaly:
     if match is None:
         example = "spike@2026-01-14T14:00/30min"
         raise ValueError(f"expected KIND@START/DURATION (e.g. {example}), got {spec!r}")
-    if match["kind"] not in tuple(Kind):
+    if match["kind"] not in DEFAULT_SIZE:  # « anomaly » n'existe que dans les données réelles
         raise ValueError(f"unknown anomaly kind {match['kind']!r}, expected spike, drop or drift")
     duration = int(match["amount"]) * UNITS[match["unit"]]
     if duration <= timedelta(0):
