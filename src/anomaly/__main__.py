@@ -10,7 +10,14 @@ from pathlib import Path
 from anomaly.alerting import DEFAULT_CONFIRM, DEFAULT_QUIET, Alert, raise_alerts
 from anomaly.detect import flag_deviations
 from anomaly.model import Point
-from anomaly.normal import DEFAULT_K, DEFAULT_WINDOW, Band, rolling_bands
+from anomaly.normal import (
+    DEFAULT_K,
+    DEFAULT_WINDOW,
+    SEASONAL_WINDOW,
+    Band,
+    Method,
+    normal_bands,
+)
 from anomaly.plot import plot_metric
 from anomaly.simulate import (
     DEFAULT_START,
@@ -137,10 +144,18 @@ def add_metric_options(command: argparse.ArgumentParser) -> None:
 
 def add_band_options(command: argparse.ArgumentParser) -> None:
     command.add_argument(
+        "--method",
+        type=Method,
+        choices=tuple(Method),
+        default=Method.ROLLING,
+        help="rolling: mean of the last points; seasonal: same time on previous days of the same "
+        "kind, weekday or weekend (default: rolling)",
+    )
+    command.add_argument(
         "--window",
         type=int,
-        default=DEFAULT_WINDOW,
-        help=f"previous points behind each band (default: {DEFAULT_WINDOW}, i.e. 1 hour)",
+        help=f"previous points behind each band (default: {DEFAULT_WINDOW}, i.e. 1 hour, "
+        f"rolling; {SEASONAL_WINDOW}, i.e. 1 day, seasonal)",
     )
     command.add_argument(
         "--k", type=float, default=DEFAULT_K, help=f"band half-width in std (default: {DEFAULT_K})"
@@ -174,7 +189,7 @@ def run_show(args: argparse.Namespace) -> int:
     bands: list[Band | None] = [None] * len(points)
     if args.band:
         try:
-            bands = rolling_bands([point.value for point in points], args.window, args.k)
+            bands = normal_bands(points, args.method, args.window, args.k)
         except ValueError as error:
             print(f"anomaly show: {error}", file=sys.stderr)
             return 2
@@ -207,7 +222,7 @@ def run_detect(args: argparse.Namespace) -> int:
     if points is None:
         return 2
     try:
-        flags = flag_deviations(points, args.window, args.k)
+        flags = flag_deviations(points, args.window, args.k, args.method)
     except ValueError as error:
         print(f"anomaly detect: {error}", file=sys.stderr)
         return 2
@@ -217,7 +232,8 @@ def run_detect(args: argparse.Namespace) -> int:
         line = f"{timestamp}  {flag.value:>8.2f}  expected {flag.expected:>8.2f}  z {flag.z:>+8.2f}"
         print(f"{line}  {flag.label or ''}".rstrip())
     judged = [point for point in points if is_shown(point.timestamp, args)]
-    summary = f"{len(flags)} flagged points out of {len(judged)} (window {args.window}, k {args.k})"
+    settings = f"{args.method}, window {args.window}, k {args.k}"
+    summary = f"{len(flags)} flagged points out of {len(judged)} ({settings})"
     if any(
         point.label for point in judged
     ):  # vérité terrain connue : dire combien de flags sont justes
@@ -238,7 +254,7 @@ def run_alert(args: argparse.Namespace) -> int:
     if points is None:
         return 2
     try:
-        flags = flag_deviations(points, args.window, args.k)
+        flags = flag_deviations(points, args.window, args.k, args.method)
         alerts = raise_alerts(points, flags, args.confirm, args.quiet)
     except ValueError as error:
         print(f"anomaly alert: {error}", file=sys.stderr)
@@ -250,7 +266,7 @@ def run_alert(args: argparse.Namespace) -> int:
             line = describe_alert(args.metric, alert)
             print(line)
             log.write(line + "\n")
-    settings = f"confirm {args.confirm}, quiet {args.quiet}"
+    settings = f"{args.method}, confirm {args.confirm}, quiet {args.quiet}"
     summary = f"{len(alerts)} alerts ({settings}), logged to {args.log}"
     if any(point.label for point in points if is_shown(point.timestamp, args)):
         summary += f", {sum(alert.label is not None for alert in alerts)} on a true anomaly"
@@ -300,8 +316,8 @@ def run_plot(args: argparse.Namespace) -> int:
     if points is None:
         return 2
     try:
-        bands = rolling_bands([point.value for point in points], args.window, args.k)
-        flags = flag_deviations(points, args.window, args.k)
+        bands = normal_bands(points, args.method, args.window, args.k)
+        flags = flag_deviations(points, args.window, args.k, args.method)
         alerts = raise_alerts(points, flags, args.confirm, args.quiet)
     except ValueError as error:
         print(f"anomaly plot: {error}", file=sys.stderr)
@@ -315,7 +331,7 @@ def run_plot(args: argparse.Namespace) -> int:
     alerts = [alert for alert in alerts if is_shown(alert.raised_at, args)]
     first, last = (points[i].timestamp.isoformat(timespec="minutes") for i in (0, -1))
     subtitle = (
-        f"{first} → {last}   ·   window {args.window} points, k {args.k:g}, "
+        f"{first} → {last}   ·   {args.method}, window {args.window} points, k {args.k:g}, "
         f"confirm {args.confirm}, quiet {args.quiet}   ·   "
         f"{len(flags)} flagged points, {len(alerts)} alerts"
     )
@@ -356,6 +372,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.command is None:
         parser.print_help()
         return 1
+    if "method" in args and args.window is None:  # la fenêtre par défaut dépend de la méthode
+        args.window = args.method.default_window
     run: Callable[[argparse.Namespace], int] = args.run
     try:
         return run(args)

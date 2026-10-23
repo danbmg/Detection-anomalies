@@ -58,11 +58,30 @@ For each point, the expected value is the mean of the `--window` points just bef
 and the normal range is expected ± `--k` standard deviations of those points (default 3).
 A point is never part of its own range, and the first `--window` points are shown as `warming up`.
 
+### Seasonal method
+
+```bash
+python -m anomaly show traffic --band --method seasonal --from 2026-01-14T01:50 --to 2026-01-14T02:40
+python -m anomaly alert traffic --method seasonal   # 3 alerts, all on a true anomaly (rolling: 43)
+```
+
+The rolling mean only knows the last hour, so it takes the nightly batch for an anomaly every night.
+With `--method seasonal`, the expected value is the median of the same time of day on the 5 previous days of the same kind
+(weekdays are compared with weekdays, weekends with weekends): the batch at 02:00 becomes expected.
+A median ignores one abnormal reference day, where a mean would copy its spike into the next days.
+
+The band is expected ± `--k` times the usual gap, measured in % of the expected value, because noise grows with traffic.
+That usual gap is learned from the `--window` previous points (default 288, i.e. 1 day, for this method),
+skipping points outside their band: otherwise a spike would widen the band for a whole day.
+A point warms up until it has one previous day of the same kind and `--window` gaps behind it.
+A slow drift still goes unnoticed: the expected value follows it a few days later.
+
 ### Detect deviations
 
 ```bash
 python -m anomaly detect traffic                                     # every flagged point + a summary
 python -m anomaly detect traffic --from 2026-01-13 --to 2026-01-14   # one day only
+python -m anomaly detect traffic --method seasonal                   # see "Seasonal method"
 ```
 
 A point is flagged when its z-score, its distance to the expected value in standard deviations, is above `--k` (default 3).
@@ -90,7 +109,7 @@ python -m anomaly plot traffic --from 2026-01-14T08:00 --to 2026-01-14T20:00 --o
 
 The chart shows the value (blue line), its normal range (blue wash), flagged points (orange dots),
 alerts (black triangles at the top) and, when known, the true anomalies (red bars).
-It accepts the same `--window`, `--k`, `--confirm` and `--quiet` settings as the other commands.
+It accepts the same `--method`, `--window`, `--k`, `--confirm` and `--quiet` settings as the other commands.
 
 ## Development
 

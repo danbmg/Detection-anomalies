@@ -1,4 +1,6 @@
 import math
+import statistics
+from collections.abc import Callable
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -7,8 +9,15 @@ import pytest
 from anomaly.__main__ import main
 from anomaly.detect import Flag, flag_deviations, z_score
 from anomaly.model import Kind, Point
-from anomaly.normal import Band
-from anomaly.simulate import DEFAULT_START, default_anomalies, simulate
+from anomaly.normal import Band, Method, is_weekend, normal_bands
+from anomaly.simulate import (
+    BATCH_END,
+    BATCH_START,
+    DEFAULT_START,
+    default_anomalies,
+    normal_level,
+    simulate,
+)
 from anomaly.storage import History
 
 T0 = datetime(2026, 1, 5)
@@ -69,6 +78,31 @@ def test_every_simulated_anomaly_is_flagged() -> None:
         assert any(anomaly.covers(flag.timestamp) for flag in flags), anomaly
 
 
+def errors(method: Method, keep: Callable[[datetime], bool]) -> list[float]:
+    """How far the expected value is from the true noiseless level, in %, on a clean series."""
+    points = simulate(DEFAULT_START, 4, 42, [])
+    return [
+        abs(band.expected - normal_level(point.timestamp)) / normal_level(point.timestamp)
+        for point, band in zip(points, normal_bands(points, method), strict=True)
+        if band is not None and keep(point.timestamp)
+    ]
+
+
+def test_seasonal_expected_follows_the_day_and_the_week() -> None:
+    def everywhere(t: datetime) -> bool:
+        return True
+
+    def in_batch(t: datetime) -> bool:
+        return BATCH_START <= t.time() < BATCH_END
+
+    # About 2 % off on average, weekends included (rolling: 14 %). During the nightly batch,
+    # at most 7 % off, where the rolling mean of the hour before misses it by 80 %.
+    assert statistics.fmean(errors(Method.SEASONAL, everywhere)) < 0.05
+    assert statistics.fmean(errors(Method.SEASONAL, is_weekend)) < 0.05
+    assert max(errors(Method.SEASONAL, in_batch)) < 0.1
+    assert max(errors(Method.ROLLING, in_batch)) > 0.5
+
+
 def test_detect_command(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     db = str(tmp_path / "h.db")
     with History(tmp_path / "h.db") as history:
@@ -76,10 +110,11 @@ def test_detect_command(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> N
     assert main(["detect", "m", "--window", "6", "--db", db]) == 0
     lines = capsys.readouterr().out.splitlines()
     assert lines[0].split() == ["2026-01-05T00:30", "30.00", "expected", "11.00", "z", "+19.00"]
-    assert lines[1] == "1 flagged points out of 8 (window 6, k 3.0)"
+    assert lines[1] == "1 flagged points out of 8 (rolling, window 6, k 3.0)"
 
     assert main(["detect", "m", "--window", "6", "--from", "2026-01-05T00:35", "--db", db]) == 0
-    assert capsys.readouterr().out.splitlines() == ["0 flagged points out of 1 (window 6, k 3.0)"]
+    summary = "0 flagged points out of 1 (rolling, window 6, k 3.0)"
+    assert capsys.readouterr().out.splitlines() == [summary]
 
     assert main(["detect", "nope", "--db", db]) == 2
     assert "unknown metric 'nope' (known: m)" in capsys.readouterr().err
@@ -94,3 +129,14 @@ def test_detect_command_counts_flags_on_true_anomalies(
     capsys.readouterr()
     assert main(["detect", "traffic", "--db", db]) == 0
     assert capsys.readouterr().out.splitlines()[-1].endswith("on a true anomaly")
+
+
+def test_detect_command_with_the_seasonal_method(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    db = str(tmp_path / "h.db")
+    out = str(tmp_path / "t.csv")
+    assert main(["simulate", "--out", out, "--store", "traffic", "--db", db]) == 0
+    capsys.readouterr()
+    assert main(["detect", "traffic", "--method", "seasonal", "--db", db]) == 0
+    assert "(seasonal, window 288, k 3.0)" in capsys.readouterr().out.splitlines()[-1]
