@@ -1,8 +1,9 @@
 """Historique des métriques : base SQLite (une ligne par métrique et instant) et fichiers CSV."""
 
 import csv
+import json
 import sqlite3
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from datetime import datetime
 from pathlib import Path
 from typing import Self
@@ -110,3 +111,28 @@ def read_csv(path: Path) -> list[Point]:
             except ValueError as error:
                 raise ValueError(f"{path}:{line}: {error}") from error
     return points
+
+
+def read_windows(path: Path, csv_name: str) -> list[tuple[datetime, datetime]]:
+    """Fenêtres d'anomalies d'un fichier NAB, lues dans `labels/combined_windows.json`.
+
+    Le JSON associe chaque fichier (`realKnownCause/nyc_taxi.csv`) à ses fenêtres [début, fin].
+    """
+    with path.open() as file:
+        windows: dict[str, list[list[str]]] = json.load(file)
+    for name, spans in windows.items():
+        if name.rsplit("/", 1)[-1] == csv_name:
+            return [(datetime.fromisoformat(a), datetime.fromisoformat(b)) for a, b in spans]
+    raise ValueError(f"{path}: no anomaly windows for {csv_name}")
+
+
+def label_windows(
+    points: Sequence[Point], windows: Sequence[tuple[datetime, datetime]]
+) -> list[Point]:
+    """Étiquette `anomaly` les points dans une fenêtre, début et fin inclus ; les autres restent."""
+    return [
+        Point(point.timestamp, point.value, Kind.ANOMALY)
+        if any(start <= point.timestamp <= end for start, end in windows)
+        else point
+        for point in points
+    ]

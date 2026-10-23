@@ -9,6 +9,7 @@ class Kind(StrEnum):
     SPIKE = "spike"
     DROP = "drop"
     DRIFT = "drift"
+    ANOMALY = "anomaly"  # données réelles (NAB) : on sait où est l'anomalie, pas de quel type
 
 
 @dataclass(frozen=True)

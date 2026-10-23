@@ -194,6 +194,62 @@ but learned once on the first week (`--window`, default 2016 points) and then fr
 It never fires on the nightly batch, but only because it sits above it:
 the night spike and the drop stay inside, and the drift is caught only when its peaks cross it, a day later.
 
+### Real data (NAB)
+
+```bash
+make nab                                    # downloads 2 series and their labels into data/nab/
+python -m anomaly import nyc_taxi data/nab/nyc_taxi.csv --labels data/nab/combined_windows.json
+python -m anomaly evaluate --metric nyc_taxi
+python -m anomaly plot nyc_taxi --method seasonal
+```
+
+The [Numenta Anomaly Benchmark](https://github.com/numenta/NAB) (NAB) gives real metrics with their known anomalies,
+as windows of time listed in `labels/combined_windows.json`.
+`make nab` downloads them from a fixed NAB commit, so always the same files.
+`import --labels` labels `anomaly` the points inside the windows of that file, and `evaluate --metric` scores a stored metric
+instead of simulated series. Results with the default settings, nothing tuned for these series:
+
+NYC taxi demand: July 2014 to January 2015, a point every 30 minutes,
+5 anomalies (NYC marathon, Thanksgiving, Christmas, New Year, a snow storm).
+
+| method | alerts | false | missed | precision | recall |
+|---|---|---|---|---|---|
+| fixed threshold | 1 | 0 | 4 | 100 % | 20 % |
+| rolling | 411 | 382 | 0 | 7 % | 100 % |
+| rolling, adaptive k | 8 | 8 | 5 | 0 % | 0 % |
+| seasonal | 113 | 97 | 0 | 14 % | 100 % |
+| seasonal, adaptive k | 80 | 72 | 1 | 10 % | 80 % |
+
+Temperature of an industrial machine (`machine_temperature_system_failure.csv`): December 2013 to February 2014,
+a point every 5 minutes, 4 anomalies (failures).
+
+| method | alerts | false | missed | precision | recall |
+|---|---|---|---|---|---|
+| fixed threshold | 11 | 6 | 0 | 45 % | 100 % |
+| rolling | 68 | 57 | 0 | 16 % | 100 % |
+| rolling, adaptive k | 17 | 14 | 1 | 18 % | 75 % |
+| seasonal | 47 | 44 | 3 | 6 % | 25 % |
+| seasonal, adaptive k | 44 | 39 | 3 | 11 % | 25 % |
+
+Differences with the simulated data:
+
+- **Many more false alerts.** On taxis, the seasonal method still finds all 5 anomalies, but with 97 false alerts in 7 months
+  (1 in the simulated month). Real noise is not the clean 5 % of the simulator.
+- **A richer week.** 83 of those 97 false alerts fall on Friday, Saturday or Sunday, mostly between 22:00 and 01:00:
+  a Friday night looks like a weekend night, and a Saturday does not look like a Sunday.
+  Splitting the week into weekdays and weekends fits the simulator, which was built that way, not taxis.
+- **No daily cycle at all.** The machine temperature has none, so "the same time on previous days" means nothing there:
+  the seasonal method misses 3 failures out of 4, and the plain fixed threshold does best.
+  No method wins everywhere: the method has to fit how the metric behaves.
+- **Another pace.** The defaults count points and were sized for one point every 5 minutes.
+  At one point every 30 minutes, the rolling window is 6 hours, the seasonal usual gap is learned over 6 days,
+  the fixed threshold over 6 weeks, and the adaptive k is recomputed every 6 hours.
+- **Labels are wide windows, without a kind.** NAB puts each anomaly in a window of several days that starts before the event,
+  and does not say whether it is a spike or a drop (hence the `anomaly` label).
+  An alert well before the event still counts as correct, and the `delay` column counts from the start of the window.
+- **Imperfect files.** The machine temperature file has 12 timestamps twice (one hour on 2014-01-07):
+  the history keeps one point per timestamp, the last one read.
+
 ## Development
 
 | Command | Purpose |
@@ -204,5 +260,6 @@ the night spike and the drop stay inside, and the drift is caught only when its 
 | `make typecheck` | mypy in strict mode |
 | `make test` | pytest |
 | `make fclean` | remove the virtualenv and every cache |
+| `make nab` | download the NAB series and labels into `data/nab/` (once) |
 
 Code lives in `src/anomaly/`, tests in `tests/`.

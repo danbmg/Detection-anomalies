@@ -27,7 +27,7 @@ from anomaly.detect import (
     flag_outside,
     has_drifts,
 )
-from anomaly.evaluate import Score, score_alerts
+from anomaly.evaluate import Score, score_alerts, true_windows
 from anomaly.model import Kind, Point
 from anomaly.normal import (
     DEFAULT_K,
@@ -46,7 +46,14 @@ from anomaly.simulate import (
     parse_anomaly,
     simulate,
 )
-from anomaly.storage import DEFAULT_DB, History, read_csv, write_csv
+from anomaly.storage import (
+    DEFAULT_DB,
+    History,
+    label_windows,
+    read_csv,
+    read_windows,
+    write_csv,
+)
 
 DEFAULT_LOG = Path("data/alerts.log")
 DEFAULT_SPEED = 86400.0  # 1 jour de données par seconde : les 4 semaines simulées en 28 secondes
@@ -142,12 +149,18 @@ def add_simulate_command(commands: Commands) -> None:
 def run_import(args: argparse.Namespace) -> int:
     try:
         points = read_csv(args.csv)
+        if args.labels:
+            windows = read_windows(args.labels, args.csv.name)
+            points = label_windows(points, windows)
     except (OSError, ValueError) as error:
         print(f"anomaly import: {error}", file=sys.stderr)
         return 2
     with History(args.db) as history:
         new = history.add(args.metric, points)
     print(f"Read {len(points)} points from {args.csv}: {new} new in '{args.metric}' ({args.db})")
+    if args.labels:
+        labelled = sum(point.label is Kind.ANOMALY for point in points)
+        print(f"Labelled {labelled} points 'anomaly' in {len(windows)} windows from {args.labels}")
     return 0
 
 
@@ -155,6 +168,13 @@ def add_import_command(commands: Commands) -> None:
     command = commands.add_parser("import", help="store a CSV file (timestamp,value[,label])")
     command.add_argument("metric", help="name of the metric, e.g. traffic")
     command.add_argument("csv", type=Path, help="CSV file to import")
+    command.add_argument(
+        "--labels",
+        type=Path,
+        metavar="JSON",
+        help="NAB anomaly windows (labels/combined_windows.json): points inside them are "
+        "labelled 'anomaly', the ground truth",
+    )
     add_db_option(command)
     command.set_defaults(run=run_import)
 
@@ -505,10 +525,27 @@ EVALUATED = (
 
 
 def run_evaluate(args: argparse.Namespace) -> int:
-    anomalies = default_anomalies(DEFAULT_START, 4)
+    if args.metric:
+        points = load_metric(args)
+        if points is None:
+            return 2
+        windows = true_windows(points)
+        if not windows:
+            print(f"anomaly evaluate: '{args.metric}' has no ground truth labels", file=sys.stderr)
+            return 2
+        series = [points]
+        title = f"Metric '{args.metric}': {len(points)} points, {len(windows)} true anomalies"
+    else:
+        anomalies = default_anomalies(DEFAULT_START, 4)
+        seeds = range(args.seed, args.seed + args.runs)
+        series = [simulate(DEFAULT_START, 4, seed, anomalies) for seed in seeds]
+        which = f"seed {seeds[0]}" if args.runs == 1 else f"seeds {seeds[0]} to {seeds[-1]}"
+        kinds = ", ".join(anomaly.kind for anomaly in anomalies)
+        title = (
+            f"Simulated traffic, 4 weeks, {which}: {len(anomalies)} true anomalies each ({kinds})"
+        )
     scores = {name: Score() for name, _, _ in EVALUATED}
-    for seed in range(args.seed, args.seed + args.runs):
-        points = simulate(DEFAULT_START, 4, seed, anomalies)
+    for points in series:
         for name, method, adaptive in EVALUATED:
             try:
                 detector = Detector(method, None, args.k, adaptive, args.confirm, args.quiet)
@@ -518,10 +555,7 @@ def run_evaluate(args: argparse.Namespace) -> int:
             alerts = [alert for point in points for alert in detector.feed(point)]
             scores[name] += score_alerts(points, alerts)
 
-    last = args.seed + args.runs - 1
-    seeds = f"seed {args.seed}" if args.runs == 1 else f"seeds {args.seed} to {last}"
-    kinds = ", ".join(anomaly.kind for anomaly in anomalies)
-    print(f"Simulated traffic, 4 weeks, {seeds}: {len(anomalies)} true anomalies each ({kinds})")
+    print(title)
     print(f"k {args.k}, confirm {args.confirm}, quiet {args.quiet}\n")
     header = ("method", "alerts", "false", "missed", "precision", "recall", "delay", "missed kinds")
     print(
@@ -558,7 +592,10 @@ def count_kinds(kinds: tuple[Kind, ...]) -> str:
 
 def add_evaluate_command(commands: Commands) -> None:
     command = commands.add_parser(
-        "evaluate", help="compare every method with the ground truth of simulated series"
+        "evaluate", help="compare every method with the ground truth of simulated or stored series"
+    )
+    command.add_argument(
+        "--metric", help="evaluate this stored metric (with labels) instead of simulated series"
     )
     command.add_argument("--seed", type=int, default=42, help="first series (default: 42)")
     command.add_argument(
@@ -568,7 +605,8 @@ def add_evaluate_command(commands: Commands) -> None:
         "--k", type=float, default=DEFAULT_K, help=f"band half-width in std (default: {DEFAULT_K})"
     )
     add_alert_options(command)
-    command.set_defaults(run=run_evaluate)
+    add_db_option(command)
+    command.set_defaults(run=run_evaluate, end=None)  # load_metric lit toute la série
 
 
 def build_parser() -> argparse.ArgumentParser:

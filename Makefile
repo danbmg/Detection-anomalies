@@ -1,6 +1,12 @@
 VENV	=	.venv
 PYTHON	=	$(VENV)/bin/python
 
+# NAB (Numenta Anomaly Benchmark) figé sur un commit : les mêmes fichiers à chaque téléchargement
+NAB	=	https://raw.githubusercontent.com/numenta/NAB/ea702d75cc2258d9d7dd35ca8e5e2539d71f3140
+NAB_FILES	=	data/nab/nyc_taxi.csv \
+		data/nab/machine_temperature_system_failure.csv \
+		data/nab/combined_windows.json
+
 all:	install
 
 install:	$(VENV)
@@ -35,4 +41,14 @@ fclean:	clean
 
 re:	fclean install
 
-.PHONY:	all install lint format typecheck test check clean fclean re
+nab:	$(NAB_FILES)
+
+data/nab/%.csv:
+	mkdir -p data/nab
+	curl -sSfL -o $@ $(NAB)/data/realKnownCause/$*.csv
+
+data/nab/combined_windows.json:
+	mkdir -p data/nab
+	curl -sSfL -o $@ $(NAB)/labels/combined_windows.json
+
+.PHONY:	all install lint format typecheck test check clean fclean re nab
