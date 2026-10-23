@@ -1,4 +1,4 @@
-"""Data shared by every module: a metric point and the kinds of anomaly."""
+"""Données partagées par tous les modules : un point de métrique et les types d'anomalie."""
 
 from dataclasses import dataclass
 from datetime import datetime
@@ -13,6 +13,6 @@ class Kind(StrEnum):
 
 @dataclass(frozen=True)
 class Point:
-    timestamp: datetime  # naive local time: the day/night cycle is local
+    timestamp: datetime  # heure locale sans fuseau : le cycle jour/nuit est local
     value: float
-    label: Kind | None  # ground truth: the anomaly at this point, None when normal or unknown
+    label: Kind | None  # vérité terrain : l'anomalie à ce point, None si normal ou inconnu

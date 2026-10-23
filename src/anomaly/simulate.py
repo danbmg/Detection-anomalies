@@ -1,4 +1,4 @@
-"""Synthetic web app traffic (requests per minute) with anomalies injected at known times."""
+"""Trafic synthétique d'une application web (requêtes/min), anomalies à des dates connues."""
 
 import math
 import random
@@ -9,14 +9,14 @@ from datetime import datetime, time, timedelta
 from anomaly.model import Kind, Point
 
 STEP = timedelta(minutes=5)
-DEFAULT_START = datetime(2026, 1, 5)  # a Monday at midnight
+DEFAULT_START = datetime(2026, 1, 5)  # un lundi à minuit
 
-BASE_LEVEL = 200.0  # mean requests per minute on a weekday
-DAILY_AMPLITUDE = 0.6  # traffic swings from 40% (04:00) to 160% (16:00) of the base level
+BASE_LEVEL = 200.0  # requêtes par minute en moyenne un jour de semaine
+DAILY_AMPLITUDE = 0.6  # le trafic varie de 40 % (4h) à 160 % (16h) du niveau de base
 WEEKEND_FACTOR = 0.7
 BATCH_START, BATCH_END = time(2, 0), time(2, 30)
-BATCH_EXTRA = 300.0  # added by the nightly batch job: higher than the daytime peak, yet normal
-NOISE = 0.05  # standard deviation of the noise, as a fraction of the level
+BATCH_EXTRA = 300.0  # ajouté par le batch de nuit : plus haut que le pic de jour, pourtant normal
+NOISE = 0.05  # écart-type du bruit, en fraction du niveau
 
 
 DEFAULT_SIZE = {Kind.SPIKE: 3.0, Kind.DROP: 0.2, Kind.DRIFT: 1.5}
@@ -27,7 +27,7 @@ class Anomaly:
     kind: Kind
     start: datetime
     duration: timedelta
-    size: float  # multiplier: x3 for a spike, x0.2 for a drop, x1.5 at the end of a drift
+    size: float  # multiplicateur : x3 pour un pic, x0,2 pour une chute, x1,5 à la fin d'une dérive
 
     @property
     def end(self) -> datetime:
@@ -37,11 +37,11 @@ class Anomaly:
         return self.start <= t < self.end
 
     def factor(self, t: datetime) -> float:
-        """Multiplier applied to the normal value at time t, 1.0 outside the anomaly."""
+        """Multiplicateur appliqué à la valeur normale à l'instant t, 1.0 hors de l'anomalie."""
         if not self.covers(t):
             return 1.0
         if self.kind is Kind.DRIFT:
-            progress = (t - self.start) / self.duration  # grows from 0 to 1 across the drift
+            progress = (t - self.start) / self.duration  # va de 0 à 1 pendant la dérive
             return 1.0 + (self.size - 1.0) * progress
         return self.size
 
@@ -51,7 +51,7 @@ def make_anomaly(kind: Kind, start: datetime, duration: timedelta) -> Anomaly:
 
 
 def normal_level(t: datetime) -> float:
-    """Expected traffic at time t, without noise or anomalies."""
+    """Trafic attendu à l'instant t, sans bruit ni anomalie."""
     hour = t.hour + t.minute / 60
     daily = 1.0 - DAILY_AMPLITUDE * math.cos(2 * math.pi * (hour - 4) / 24)
     weekly = WEEKEND_FACTOR if t.weekday() >= 5 else 1.0
@@ -62,7 +62,7 @@ def normal_level(t: datetime) -> float:
 
 
 def simulate(start: datetime, weeks: int, seed: int, anomalies: list[Anomaly]) -> list[Point]:
-    """One point every 5 minutes over `weeks` weeks. The same seed always gives the same series."""
+    """Un point toutes les 5 minutes sur `weeks` semaines. Même graine, même série."""
     end = start + timedelta(weeks=weeks)
     for anomaly in anomalies:
         if not start <= anomaly.start < end:
@@ -72,10 +72,10 @@ def simulate(start: datetime, weeks: int, seed: int, anomalies: list[Anomaly]) -
     t = start
     while t < end:
         level = normal_level(t)
-        # One random draw per point, so injecting an anomaly never changes the noise elsewhere.
+        # Un tirage aléatoire par point : injecter une anomalie ne change jamais le bruit ailleurs.
         value = max(0.0, rng.gauss(level, NOISE * level))
         label = None
-        for anomaly in anomalies:  # if anomalies overlap, the last one gives the label
+        for anomaly in anomalies:  # si des anomalies se chevauchent, la dernière donne l'étiquette
             if anomaly.covers(t):
                 value *= anomaly.factor(t)
                 label = anomaly.kind
@@ -85,11 +85,11 @@ def simulate(start: datetime, weeks: int, seed: int, anomalies: list[Anomaly]) -
 
 
 def default_anomalies(start: datetime, weeks: int) -> list[Anomaly]:
-    """Built-in scenario after a quiet first week. A series shorter than 4 weeks keeps what fits."""
+    """Scénario intégré après une semaine calme. Une série plus courte garde ce qui rentre."""
     day, hour, minute = timedelta(days=1), timedelta(hours=1), timedelta(minutes=1)
     scenario = [
         make_anomaly(Kind.SPIKE, start + 9 * day + 14 * hour, 30 * minute),
-        # At night x3 stays below the normal daytime peak: invisible to a fixed threshold.
+        # La nuit, x3 reste sous le pic normal de la journée : invisible pour un seuil fixe.
         make_anomaly(Kind.SPIKE, start + 12 * day + 3.5 * hour, 20 * minute),
         make_anomaly(Kind.DROP, start + 16 * day + 10 * hour, 2 * hour),
         make_anomaly(Kind.DRIFT, start + 22 * day, 4 * day),
@@ -103,7 +103,7 @@ UNITS = {"min": timedelta(minutes=1), "h": timedelta(hours=1), "d": timedelta(da
 
 
 def parse_anomaly(spec: str) -> Anomaly:
-    """Read `KIND@START/DURATION`, e.g. `spike@2026-01-14T14:00/30min`."""
+    """Lit `TYPE@DÉBUT/DURÉE`, par exemple `spike@2026-01-14T14:00/30min`."""
     match = SPEC.fullmatch(spec)
     if match is None:
         example = "spike@2026-01-14T14:00/30min"

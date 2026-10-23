@@ -1,1 +1,1 @@
-"""Detect abnormal behavior in a time series metric without fixed thresholds."""
+"""Détecte les comportements anormaux d'une série temporelle, sans seuil fixe."""

@@ -1,4 +1,4 @@
-"""PNG chart of a metric: the series, its normal band, flagged points, alerts and ground truth."""
+"""Graphique PNG d'une métrique : série, bande normale, points marqués, alertes, vérité terrain."""
 
 import math
 from collections.abc import Sequence
@@ -13,20 +13,20 @@ from anomaly.detect import Flag
 from anomaly.model import Point
 from anomaly.normal import Band
 
-# Light chart palette. The series blue and the flag orange pass every colour-blindness check
-# together; alerts are events, drawn in neutral ink with their own shape instead of a third hue.
+# Palette claire. Le bleu de la série et l'orange des flags passent tous les tests de daltonisme
+# ensemble ; les alertes sont des événements : encre neutre et forme propre, pas de 3e teinte.
 SURFACE = "#fcfcfb"
-SERIES = "#2a78d6"  # the metric and its normal band: the band is the series' own range
+SERIES = "#2a78d6"  # la métrique et sa bande normale : la bande est la plage propre de la série
 FLAG = "#eb6834"
 ALERT = "#0b0b0b"
-TRUTH = "#c3c2b7"  # ground truth: a recessive gray wash behind the data
+TRUTH = "#c3c2b7"  # vérité terrain : un aplat gris discret derrière les données
 TEXT = "#52514e"
 MUTED = "#898781"
 GRID = "#e1e0d9"
 
 
 def truth_spans(points: Sequence[Point]) -> list[tuple[datetime, datetime]]:
-    """Runs of points that carry a ground-truth label, each ending where the next point starts."""
+    """Séries de points étiquetés (vérité terrain), chacune finissant au point suivant."""
     spans = []
     start = None
     for point in points:
@@ -59,7 +59,7 @@ def plot_metric(
         axes.axvspan(date2num(start), date2num(end), color=TRUTH, alpha=0.45, lw=0, label=label)
 
     k = next((band.k for band in bands if band is not None), math.nan)
-    lower = [band.lower if band else math.nan for band in bands]  # nan: warming up, no band
+    lower = [band.lower if band else math.nan for band in bands]  # nan : en chauffe, pas de bande
     upper = [band.upper if band else math.nan for band in bands]
     band_label = f"Normal range (± {k:g} std)"
     axes.fill_between(x, lower, upper, color=SERIES, alpha=0.14, lw=0, label=band_label)
@@ -70,7 +70,7 @@ def plot_metric(
         [flag.value for flag in flags],
         s=40,
         color=FLAG,
-        edgecolors=SURFACE,  # a ring in the surface colour keeps each dot readable on the line
+        edgecolors=SURFACE,  # un anneau couleur du fond garde chaque point lisible sur la ligne
         linewidths=1.5,
         zorder=3,
         label="Flagged point (|z| > k)",
@@ -80,7 +80,7 @@ def plot_metric(
     axes.plot(
         date2num([alert.raised_at for alert in alerts]),
         [1.0] * len(alerts),
-        transform=axes.get_xaxis_transform(),  # x in dates, y at the top edge of the plot
+        transform=axes.get_xaxis_transform(),  # x en dates, y au bord haut du graphique
         ls="",
         marker="v",
         ms=8,
@@ -91,7 +91,9 @@ def plot_metric(
     )
 
     values = [point.value for point in points]
-    axes.set_ylim(min(0.0, min(values)), max(values) * 1.08)  # bands may run off: data first
+    axes.set_ylim(
+        min(0.0, min(values)), max(values) * 1.08
+    )  # les bandes peuvent déborder : les données d'abord
     axes.set_xlim(x[0], x[-1])
     locator = AutoDateLocator()
     axes.xaxis.set_major_locator(locator)
@@ -103,7 +105,9 @@ def plot_metric(
     axes.spines["bottom"].set_color(MUTED)
     axes.tick_params(colors=TEXT, labelsize=9, length=0)
     figure.suptitle(title, x=0.01, ha="left", fontsize=13, color="#0b0b0b", fontweight="bold")
-    axes.set_title(subtitle, loc="left", fontsize=9.5, color=TEXT, pad=16)  # room for the alerts
+    axes.set_title(
+        subtitle, loc="left", fontsize=9.5, color=TEXT, pad=16
+    )  # de la place pour les alertes
     axes.legend(loc="upper left", bbox_to_anchor=(0, -0.08), ncols=5, frameon=False, fontsize=9)
 
     path.parent.mkdir(parents=True, exist_ok=True)
