@@ -3,6 +3,7 @@
 import argparse
 import os
 import sys
+import time
 from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
@@ -11,6 +12,7 @@ from anomaly.alerting import (
     DEFAULT_CONFIRM,
     DEFAULT_QUIET,
     Alert,
+    Detector,
     raise_alerts,
     raise_drift_alerts,
 )
@@ -22,6 +24,7 @@ from anomaly.detect import (
     adapt_bands,
     flag_drifts,
     flag_outside,
+    has_drifts,
 )
 from anomaly.model import Point
 from anomaly.normal import (
@@ -43,6 +46,7 @@ from anomaly.simulate import (
 from anomaly.storage import DEFAULT_DB, History, read_csv, write_csv
 
 DEFAULT_LOG = Path("data/alerts.log")
+DEFAULT_SPEED = 86400.0  # 1 jour de données par seconde : les 4 semaines simulées en 28 secondes
 
 # `type` garde l'alias paresseux : la forme générique n'existe que pour le vérificateur de types.
 type Commands = argparse._SubParsersAction[argparse.ArgumentParser]
@@ -52,6 +56,13 @@ def positive_int(text: str) -> int:
     value = int(text)
     if value < 1:
         raise argparse.ArgumentTypeError(f"must be at least 1, got {value}")
+    return value
+
+
+def non_negative_float(text: str) -> float:
+    value = float(text)
+    if value < 0:
+        raise argparse.ArgumentTypeError(f"must be at least 0, got {value}")
     return value
 
 
@@ -281,10 +292,7 @@ def run_detect(args: argparse.Namespace) -> int:
 
 
 def find_drifts(points: list[Point], bands: list[Band | None], method: Method) -> list[Flag]:
-    """Alarmes CUSUM, en saisonnier seulement : la moyenne glissante suit la dérive en 1 heure,
-    il ne resterait rien à additionner (178 fausses alarmes sur 209 sur la série simulée).
-    """
-    return flag_drifts(points, bands) if method is Method.SEASONAL else []
+    return flag_drifts(points, bands) if has_drifts(method) else []
 
 
 def score(flag: Flag) -> str:
@@ -304,17 +312,13 @@ def run_alert(args: argparse.Namespace) -> int:
     if points is None:
         return 2
     try:
-        bands = compute_bands(points, args)
-        flags = flag_outside(points, bands)
-        alerts = raise_alerts(points, flags, args.confirm, args.quiet)
-        alerts += raise_drift_alerts(points, find_drifts(points, bands, args.method))
+        detector = make_detector(args)
     except ValueError as error:
         print(f"anomaly alert: {error}", file=sys.stderr)
         return 2
-    alerts = sorted(
-        (alert for alert in alerts if is_shown(alert.raised_at, args)),
-        key=lambda alert: alert.raised_at,
-    )
+    # Le lot rejoue la série dans le même Detector que `watch` : mêmes points, mêmes alertes.
+    alerts = [alert for point in points for alert in detector.feed(point)]
+    alerts = [alert for alert in alerts if is_shown(alert.raised_at, args)]
     args.log.parent.mkdir(parents=True, exist_ok=True)
     with args.log.open("a") as log:
         for alert in alerts:
@@ -328,6 +332,10 @@ def run_alert(args: argparse.Namespace) -> int:
         summary += f", {sum(alert.label is not None for alert in alerts)} on a true anomaly"
     print(summary)
     return 0
+
+
+def make_detector(args: argparse.Namespace) -> Detector:
+    return Detector(args.method, args.window, args.k, args.adaptive, args.confirm, args.quiet)
 
 
 def describe_alert(metric: str, alert: Alert) -> str:
@@ -361,10 +369,14 @@ def add_alert_command(commands: Commands) -> None:
     add_metric_options(command)
     add_band_options(command)
     add_alert_options(command)
+    add_log_option(command)
+    command.set_defaults(run=run_alert)
+
+
+def add_log_option(command: argparse.ArgumentParser) -> None:
     command.add_argument(
         "--log", type=Path, default=DEFAULT_LOG, help=f"alerts are appended here ({DEFAULT_LOG})"
     )
-    command.set_defaults(run=run_alert)
 
 
 def run_plot(args: argparse.Namespace) -> int:
@@ -409,6 +421,75 @@ def add_plot_command(commands: Commands) -> None:
     command.set_defaults(run=run_plot)
 
 
+def run_watch(args: argparse.Namespace) -> int:
+    try:
+        arriving = sorted(read_csv(args.csv), key=lambda point: point.timestamp)
+        detector = make_detector(args)
+    except (OSError, ValueError) as error:
+        print(f"anomaly watch: {error}", file=sys.stderr)
+        return 2
+    args.log.parent.mkdir(parents=True, exist_ok=True)
+    stored = raised = 0
+    with History(args.db) as history, args.log.open("a") as log:
+        known = history.read(args.metric)
+        for point in known:  # le passé déjà stocké règle la bande ; ses alertes sont du passé
+            detector.feed(point)
+        last = known[-1].timestamp if known else None
+        arriving = [point for point in arriving if last is None or point.timestamp > last]
+        print(
+            f"Watching '{args.metric}': {len(known)} points in history, {len(arriving)} new "
+            f"points in {args.csv}, replayed at x{args.speed:g} (Ctrl+C to stop)",
+            flush=True,
+        )
+        started = time.monotonic()
+        try:
+            for point in arriving:
+                if args.speed > 0:
+                    # Chaque point attend son heure d'arrivée (accélérée) depuis le début : le
+                    # temps de calcul ne s'ajoute pas aux attentes, le retard ne s'accumule pas.
+                    elapsed = (point.timestamp - arriving[0].timestamp).total_seconds()
+                    time.sleep(max(0.0, started + elapsed / args.speed - time.monotonic()))
+                if last is None or point.timestamp.date() != last.date():
+                    day = point.timestamp.date().isoformat()
+                    print(f"{day}  {stored} new points stored, {raised} alerts", flush=True)
+                last = point.timestamp
+                history.add(args.metric, [point])  # stocké dès son arrivée, avant d'être jugé
+                stored += 1
+                for alert in detector.feed(point):
+                    line = describe_alert(args.metric, alert)
+                    # flush : l'alerte s'affiche tout de suite, même à travers un pipe (`| tee`)
+                    print(line, flush=True)
+                    log.write(line + "\n")
+                    log.flush()
+                    raised += 1
+        except KeyboardInterrupt:
+            print("Stopped by the user")
+    print(f"{stored} new points stored, {raised} alerts, logged to {args.log}")
+    return 0
+
+
+def add_watch_command(commands: Commands) -> None:
+    command = commands.add_parser(
+        "watch", help="replay a CSV point by point: store, detect and alert as points arrive"
+    )
+    command.add_argument("metric", help="name of the metric, e.g. traffic")
+    command.add_argument(
+        "csv", type=Path, help="CSV whose points arrive one by one (timestamp,value[,label])"
+    )
+    command.add_argument(
+        "--speed",
+        type=non_negative_float,
+        default=DEFAULT_SPEED,
+        help=f"times faster than real time (default: {DEFAULT_SPEED:g}, i.e. 1 day of data "
+        "per second; 0: no waiting)",
+    )
+    add_db_option(command)
+    add_band_options(command)
+    add_alert_options(command)
+    add_log_option(command)
+    command.set_defaults(run=run_watch)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="anomaly",
@@ -421,6 +502,7 @@ def build_parser() -> argparse.ArgumentParser:
     add_detect_command(commands)
     add_alert_command(commands)
     add_plot_command(commands)
+    add_watch_command(commands)
     return parser
 
 

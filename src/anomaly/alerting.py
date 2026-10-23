@@ -1,11 +1,15 @@
-"""Transforme les points marqués en alertes : une par incident, seulement si l'écart dure."""
+"""Transforme les points marqués en alertes : une par incident, seulement si l'écart dure.
+
+Detector enchaîne tout pour un nouveau point : bande, k, écart, dérive, alertes.
+"""
 
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 
-from anomaly.detect import Flag
+from anomaly.detect import AdaptiveK, Cusum, Flag, check_point, has_drifts
 from anomaly.model import Kind, Point
+from anomaly.normal import DEFAULT_K, Method, band_stream
 
 DEFAULT_CONFIRM = (
     2  # points marqués d'affilée pour ouvrir un incident : chaque anomalie simulée en donne 2
@@ -96,3 +100,36 @@ def raise_alerts(
 def raise_drift_alerts(points: Sequence[Point], drifts: Sequence[Flag]) -> list[Alert]:
     """Une alerte par dérive. Une alarme CUSUM n'a pas besoin d'être confirmée : sa somme l'est."""
     return raise_alerts(points, drifts, confirm=1, quiet=DRIFT_QUIET)
+
+
+class Detector:
+    """Toute la chaîne, un point à la fois : sa bande, son k, l'écart, la dérive, les alertes.
+
+    `watch` lui passe les points au fil de l'eau, `alert` toute une série d'un coup : c'est le même
+    code, donc les mêmes alertes. Chaque point n'est jugé que sur ceux reçus avant lui.
+    """
+
+    def __init__(
+        self,
+        method: Method = Method.ROLLING,
+        window: int | None = None,
+        k: float = DEFAULT_K,
+        adaptive: bool = False,
+        confirm: int = DEFAULT_CONFIRM,
+        quiet: int = DEFAULT_QUIET,
+    ) -> None:
+        self.next_band = band_stream(method, window, k)
+        self.adaptive = AdaptiveK() if adaptive else None
+        self.cusum = Cusum() if has_drifts(method) else None
+        self.alerter = Alerter(confirm, quiet)
+        self.drift_alerter = Alerter(1, DRIFT_QUIET)  # une alarme CUSUM est déjà confirmée
+
+    def feed(self, point: Point) -> list[Alert]:
+        """Les alertes que ce point ouvre : en général aucune, parfois un écart et une dérive."""
+        band = self.next_band(point)
+        if self.adaptive is not None:
+            band = self.adaptive.next(point, band)
+        alerts = [self.alerter.feed(check_point(point, band))]
+        if self.cusum is not None:
+            alerts.append(self.drift_alerter.feed(self.cusum.next(point, band)))
+        return [alert for alert in alerts if alert is not None]
