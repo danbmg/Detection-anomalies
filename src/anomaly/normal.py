@@ -36,9 +36,8 @@ def rolling_bands(
         raise ValueError(f"k must be positive, got {k}")
     bands: list[Band | None] = [None] * min(window, len(values))
     for i in range(window, len(values)):
-        past = values[
-            i - window : i
-        ]  # s'arrête avant i : une valeur ne fait jamais partie de sa propre bande
+        # s'arrête avant i : une valeur ne fait jamais partie de sa propre bande
+        past = values[i - window : i]
         mean = sum(past) / window
         variance = sum((x - mean) ** 2 for x in past) / window
         bands.append(Band(mean, math.sqrt(variance), k))
