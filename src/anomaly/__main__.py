@@ -1,6 +1,7 @@
-"""Command-line entry point: `python -m anomaly <command>`."""
+"""Point d'entrée en ligne de commande : `python -m anomaly <commande>`."""
 
 import argparse
+import os
 import sys
 from collections.abc import Callable
 from datetime import datetime
@@ -22,7 +23,7 @@ from anomaly.storage import DEFAULT_DB, History, read_csv, write_csv
 
 DEFAULT_LOG = Path("data/alerts.log")
 
-# `type` keeps the alias lazy: the generic form only exists for the type checker.
+# `type` garde l'alias paresseux : la forme générique n'existe que pour le vérificateur de types.
 type Commands = argparse._SubParsersAction[argparse.ArgumentParser]
 
 
@@ -147,7 +148,7 @@ def add_band_options(command: argparse.ArgumentParser) -> None:
 
 
 def load_metric(args: argparse.Namespace) -> list[Point] | None:
-    """Points of the metric up to --to, from the very first: a band needs the points before it."""
+    """Points de la métrique jusqu'à --to, depuis le premier : une bande a besoin des précédents."""
     error = f"anomaly {args.command}:"
     if not args.db.exists():
         print(f"{error} no history at {args.db}, import a metric first", file=sys.stderr)
@@ -217,7 +218,9 @@ def run_detect(args: argparse.Namespace) -> int:
         print(f"{line}  {flag.label or ''}".rstrip())
     judged = [point for point in points if is_shown(point.timestamp, args)]
     summary = f"{len(flags)} flagged points out of {len(judged)} (window {args.window}, k {args.k})"
-    if any(point.label for point in judged):  # ground truth known: say how many flags are right
+    if any(
+        point.label for point in judged
+    ):  # vérité terrain connue : dire combien de flags sont justes
         summary += f", {sum(flag.label is not None for flag in flags)} on a true anomaly"
     print(summary)
     return 0
@@ -354,7 +357,13 @@ def main(argv: list[str] | None = None) -> int:
         parser.print_help()
         return 1
     run: Callable[[argparse.Namespace], int] = args.run
-    return run(args)
+    try:
+        return run(args)
+    except BrokenPipeError:
+        # Le lecteur a fermé le pipe (`| head`) : on s'arrête sans bruit. Rediriger stdout vers
+        # devnull évite que le vidage final de Python ne relève l'erreur une seconde fois.
+        os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+        return 0
 
 
 if __name__ == "__main__":

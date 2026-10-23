@@ -1,4 +1,4 @@
-"""Turn flagged points into alerts: one alert per incident, only when the deviation lasts."""
+"""Transforme les points marqués en alertes : une par incident, seulement si l'écart dure."""
 
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -7,15 +7,17 @@ from datetime import datetime
 from anomaly.detect import Flag
 from anomaly.model import Kind, Point
 
-DEFAULT_CONFIRM = 2  # flagged points in a row to open an incident: every simulated anomaly gives 2
-# Unflagged points in a row to close it: 15 minutes of calm. With 1 hour, a false incident
-# opened just before the simulated drop was still running and swallowed it.
+DEFAULT_CONFIRM = (
+    2  # points marqués d'affilée pour ouvrir un incident : chaque anomalie simulée en donne 2
+)
+# Points normaux d'affilée pour le fermer : 15 minutes de calme. Avec 1 heure, un faux incident
+# ouvert juste avant la chute simulée durait encore et l'avalait.
 DEFAULT_QUIET = 3
 
 
 @dataclass(frozen=True)
 class Alert:
-    flags: tuple[Flag, ...]  # the flagged points in a row that confirmed the incident
+    flags: tuple[Flag, ...]  # les points marqués d'affilée qui ont confirmé l'incident
 
     @property
     def start(self) -> datetime:
@@ -35,20 +37,22 @@ class Alert:
 
 
 class Alerter:
-    """Fed one point at a time, oldest first, so the live mode can use it as well as a batch run."""
+    """Nourri un point à la fois, du plus ancien au plus récent : sert au mode live comme au lot."""
 
     def __init__(self, confirm: int = DEFAULT_CONFIRM, quiet: int = DEFAULT_QUIET) -> None:
         if confirm < 1 or quiet < 1:
             raise ValueError(f"confirm and quiet must be at least 1, got {confirm} and {quiet}")
         self.confirm = confirm
         self.quiet = quiet
-        self.run: list[Flag] = []  # flagged points in a row, not enough yet to raise an alert
+        self.run: list[
+            Flag
+        ] = []  # points marqués d'affilée, pas encore assez pour lever une alerte
         self.in_incident = False
-        self.calm = 0  # unflagged points in a row since the incident's last flagged point
+        self.calm = 0  # points normaux d'affilée depuis le dernier point marqué de l'incident
 
     def feed(self, flag: Flag | None) -> Alert | None:
-        """`flag` is None when the point is normal. Returns an alert when an incident opens."""
-        if self.in_incident:  # an ongoing incident never alerts again: only its end is watched
+        """`flag` vaut None si le point est normal. Renvoie une alerte quand un incident s'ouvre."""
+        if self.in_incident:  # un incident en cours n'alerte plus : seule sa fin est surveillée
             self.calm = 0 if flag else self.calm + 1
             if self.calm >= self.quiet:
                 self.in_incident = False
@@ -70,7 +74,7 @@ def raise_alerts(
     confirm: int = DEFAULT_CONFIRM,
     quiet: int = DEFAULT_QUIET,
 ) -> list[Alert]:
-    """Replay a whole series through an Alerter, oldest point first."""
+    """Rejoue toute une série dans un Alerter, du plus ancien point au plus récent."""
     flag_at = {flag.timestamp: flag for flag in flags}
     alerter = Alerter(confirm, quiet)
     alerts = []

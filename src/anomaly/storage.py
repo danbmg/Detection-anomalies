@@ -1,4 +1,4 @@
-"""Metric history: SQLite database (one row per metric and timestamp) and CSV files."""
+"""Historique des métriques : base SQLite (une ligne par métrique et instant) et fichiers CSV."""
 
 import csv
 import sqlite3
@@ -21,14 +21,14 @@ CREATE TABLE IF NOT EXISTS points (
 )
 """
 
-# The primary key forbids two rows for the same metric and timestamp:
-# importing a point again replaces it instead of creating a duplicate.
+# La clé primaire interdit deux lignes pour la même métrique et le même instant :
+# ré-importer un point le remplace au lieu de créer un doublon.
 UPSERT = """
 INSERT INTO points (metric, timestamp, value, label) VALUES (?, ?, ?, ?)
 ON CONFLICT (metric, timestamp) DO UPDATE SET value = excluded.value, label = excluded.label
 """
 
-# Missing bounds become '' and '9999', which every ISO timestamp is above and below.
+# Une borne absente devient '' ou '9999', que tout horodatage ISO dépasse ou n'atteint pas.
 SELECT_RANGE = """
 SELECT timestamp, value, label FROM points
 WHERE metric = ? AND timestamp >= coalesce(?, '') AND timestamp < coalesce(?, '9999')
@@ -53,20 +53,20 @@ class History:
         self.connection.close()
 
     def add(self, metric: str, points: Iterable[Point]) -> int:
-        """Store points, replacing those stored at the same timestamps. Returns the new ones."""
+        """Stocke les points, en remplaçant ceux du même instant. Renvoie le nombre de nouveaux."""
         before = self.count(metric)
         rows = (
             (metric, to_text(p.timestamp), p.value, p.label.value if p.label else None)
             for p in points
         )
-        with self.connection:  # one transaction: every point is stored, or none
+        with self.connection:  # une seule transaction : tous les points sont stockés, ou aucun
             self.connection.executemany(UPSERT, rows)
         return self.count(metric) - before
 
     def read(
         self, metric: str, start: datetime | None = None, end: datetime | None = None
     ) -> list[Point]:
-        """Points of `metric` from `start` (included) to `end` (excluded), oldest first."""
+        """Points de `metric` de `start` (inclus) à `end` (exclu), du plus ancien au plus récent."""
         bounds = (to_text(start) if start else None, to_text(end) if end else None)
         rows = self.connection.execute(SELECT_RANGE, (metric, *bounds))
         return [
@@ -87,7 +87,7 @@ class History:
 def write_csv(points: Iterable[Point], path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", newline="") as file:
-        writer = csv.writer(file, lineterminator="\n")  # default is \r\n, which breaks awk/grep
+        writer = csv.writer(file, lineterminator="\n")  # par défaut \r\n, ce qui casse awk/grep
         writer.writerow(["timestamp", "value", "label"])
         for point in points:
             timestamp = point.timestamp.isoformat(timespec="minutes")
@@ -95,14 +95,14 @@ def write_csv(points: Iterable[Point], path: Path) -> None:
 
 
 def read_csv(path: Path) -> list[Point]:
-    """Read `timestamp,value[,label]` rows: the simulator's CSV, or real data without labels."""
+    """Lit `timestamp,value[,label]` : CSV du simulateur, ou données réelles sans étiquette."""
     with path.open(newline="") as file:
         reader = csv.DictReader(file)
         missing = {"timestamp", "value"} - set(reader.fieldnames or [])
         if missing:
             raise ValueError(f"{path}: missing column(s) {', '.join(sorted(missing))}")
         points = []
-        for line, row in enumerate(reader, start=2):  # line 1 is the header
+        for line, row in enumerate(reader, start=2):  # la ligne 1 est l'en-tête
             try:
                 label = row.get("label")
                 timestamp = datetime.fromisoformat(row["timestamp"])

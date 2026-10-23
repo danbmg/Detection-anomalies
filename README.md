@@ -89,7 +89,7 @@ python -m anomaly plot traffic --from 2026-01-14T08:00 --to 2026-01-14T20:00 --o
 ```
 
 The chart shows the value (blue line), its normal range (blue wash), flagged points (orange dots),
-alerts (black triangles at the top) and, when known, the true anomalies (gray spans).
+alerts (black triangles at the top) and, when known, the true anomalies (red bars).
 It accepts the same `--window`, `--k`, `--confirm` and `--quiet` settings as the other commands.
 
 ## Development

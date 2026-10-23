@@ -1,4 +1,4 @@
-"""Flag the points that leave their normal range, with their z-score."""
+"""Marque les points qui sortent de leur plage normale, avec leur z-score."""
 
 import math
 from collections.abc import Sequence
@@ -15,13 +15,13 @@ class Flag:
     value: float
     expected: float
     z: float
-    label: Kind | None  # ground truth when known: shows at a glance whether the flag is right
+    label: Kind | None  # vérité terrain si connue : montre d'un coup d'œil si le flag est juste
 
 
 def z_score(value: float, band: Band) -> float:
-    """Distance from the expected value, counted in standard deviations."""
+    """Distance à la valeur attendue, comptée en écarts-types."""
     gap = value - band.expected
-    if band.std == 0:  # flat history: no change is not unusual at all, any change is infinitely so
+    if band.std == 0:  # historique plat : aucun changement est normal, tout changement est infini
         return 0.0 if gap == 0 else math.copysign(math.inf, gap)
     return gap / band.std
 
@@ -29,7 +29,7 @@ def z_score(value: float, band: Band) -> float:
 def flag_deviations(
     points: Sequence[Point], window: int = DEFAULT_WINDOW, k: float = DEFAULT_K
 ) -> list[Flag]:
-    """Points whose |z| is above k, i.e. outside their normal band. Warming-up points never are."""
+    """Points dont |z| dépasse k, donc hors de leur bande. Jamais ceux en chauffe."""
     bands = rolling_bands([point.value for point in points], window, k)
     flags = []
     for point, band in zip(points, bands, strict=True):
