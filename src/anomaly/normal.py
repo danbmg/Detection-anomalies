@@ -1,4 +1,5 @@
-"""Plage normale d'une métrique apprise de son passé : glissante (cycle 1) ou saisonnière (#8).
+"""Plage normale d'une métrique apprise de son passé : glissante (cycle 1), saisonnière (#8), ou
+figée après une semaine (le seuil fixe, la référence que l'évaluation compare aux deux autres).
 
 Chaque méthode se nourrit d'un point à la fois (mode live) ; les fonctions `*_bands` ne font que
 lui passer une série entière (mode lot). Un seul calcul, donc le live et le lot donnent pareil.
@@ -18,6 +19,7 @@ DEFAULT_WINDOW = 12  # points précédents derrière chaque bande : 1 heure à u
 # Écarts précédents derrière l'écart habituel saisonnier : 1 jour. Saison retirée, l'écart en %
 # est le même à toute heure. Sur 1 heure, trop peu de points : l'estimation variait trop.
 SEASONAL_WINDOW = 288
+FIXED_WINDOW = 2016  # le seuil fixe s'apprend sur la première semaine, puis ne bouge plus
 DEFAULT_K = 3.0  # demi-largeur de la bande, en écarts-types
 DEFAULT_DAYS = 5  # jours de référence derrière une valeur attendue saisonnière : une semaine ouvrée
 DAY = timedelta(days=1)
@@ -26,10 +28,16 @@ DAY = timedelta(days=1)
 class Method(StrEnum):
     ROLLING = "rolling"  # moyenne de la dernière heure : simple, mais prend le batch pour un pic
     SEASONAL = "seasonal"  # même heure les jours précédents : le batch de 2h devient attendu
+    FIXED = "fixed"  # une seule bande pour toute la série : le seuil fixe que critique le sujet
 
     @property
     def default_window(self) -> int:
-        return SEASONAL_WINDOW if self is Method.SEASONAL else DEFAULT_WINDOW
+        windows = {
+            Method.ROLLING: DEFAULT_WINDOW,
+            Method.SEASONAL: SEASONAL_WINDOW,
+            Method.FIXED: FIXED_WINDOW,
+        }
+        return windows[self]
 
 
 @dataclass(frozen=True)
@@ -81,6 +89,29 @@ def rolling_bands(
     """Une bande par valeur, calculée sur les `window` valeurs précédentes, jamais les suivantes."""
     rolling = RollingBands(window, k)
     return [rolling.next(value) for value in values]
+
+
+class FixedBands:
+    """Seuil fixe : moyenne ± k écarts-types des `window` premières valeurs, puis figée.
+
+    Même calcul que la bande glissante, mais une seule fois : la comparer aux autres méthodes
+    mesure ce qu'on gagne à laisser la bande suivre la métrique. Les `window` premières chauffent.
+    """
+
+    def __init__(self, window: int = FIXED_WINDOW, k: float = DEFAULT_K) -> None:
+        check_settings(window, k)
+        self.window, self.k = window, k
+        self.training: list[float] = []
+        self.band: Band | None = None
+
+    def next(self, value: float) -> Band | None:
+        if self.band is None and len(self.training) == self.window:
+            mean = sum(self.training) / self.window
+            variance = sum((x - mean) ** 2 for x in self.training) / self.window
+            self.band = Band(mean, math.sqrt(variance), self.k)
+        if self.band is None:
+            self.training.append(value)
+        return self.band
 
 
 def is_weekend(t: datetime) -> bool:
@@ -161,8 +192,8 @@ def band_stream(
         window = method.default_window
     if method is Method.SEASONAL:
         return SeasonalBands(DEFAULT_DAYS, window, k).next
-    rolling = RollingBands(window, k)
-    return lambda point: rolling.next(point.value)
+    bands = FixedBands(window, k) if method is Method.FIXED else RollingBands(window, k)
+    return lambda point: bands.next(point.value)
 
 
 def normal_bands(

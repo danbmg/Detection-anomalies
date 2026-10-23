@@ -8,7 +8,7 @@ import pytest
 
 from anomaly.__main__ import main
 from anomaly.model import Point
-from anomaly.normal import Band, rolling_bands, seasonal_bands
+from anomaly.normal import Band, Method, normal_bands, rolling_bands, seasonal_bands
 from anomaly.storage import History
 
 MONDAY = datetime(2026, 1, 5)
@@ -188,3 +188,9 @@ def test_show_band_command_with_the_seasonal_method(
     with pytest.raises(SystemExit) as exit_info:  # argparse refuses an unknown method
         main(["show", "m", "--band", "--method", "weekly", "--db", db])
     assert exit_info.value.code == 2
+
+
+def test_fixed_band_is_learned_once_then_frozen() -> None:
+    # Learned on 1, 3, 1, 3 (mean 2, std 1), then the same band whatever comes after.
+    bands = normal_bands(daily([1, 3, 1, 3, 100, 1000, 2]), Method.FIXED, window=4, k=3)
+    assert bands == [None] * 4 + [Band(2, 1, 3)] * 3
